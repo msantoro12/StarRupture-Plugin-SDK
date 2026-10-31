@@ -1,11 +1,13 @@
 // Test plugin for the loader's per-build locator selection (interface 72),
-// field resolution and Game-SDK globals (GetSdkGlobals, in PluginInit).
+// field resolution, Game-SDK globals (GetSdkGlobals, in PluginInit) and
+// IsGameThread (false in PluginInit at startup, true in the first tick).
 // Run it under sr-aobscan --plugin: each request below exercises one rule of
 // memory_scanner/version_map.h, and the expected verdict is in its name.
 //
 // The two patterns are BetterDrone's FUNCTION_START locators, unique on
 // CL-127004 and CL-128786.
 #include <windows.h>
+#include <atomic>
 #include "plugin_interface.h"
 #include "Basic.hpp"
 #include "CoreUObject_classes.hpp"
@@ -61,6 +63,25 @@ namespace
 		PluginFieldResult result{};
 		return scan->ResolveField(self, &req, &result);
 	}
+
+	// IsGameThread, once in PluginInit and once in the first tick. The
+	// harness hands PluginInit a table with GetSdkGlobals alone, so both
+	// slots are checked before use.
+	IPluginSelf*      g_self = nullptr;
+	std::atomic<bool> g_tickLogged{ false };
+
+	void LogGameThread(const char* where)
+	{
+		const IPluginEngineEvents* engine = g_self->hooks ? g_self->hooks->Engine : nullptr;
+		if (engine && engine->IsGameThread)
+			g_self->logger->Info(g_self, "IsGameThread in %s: %s", where, engine->IsGameThread() ? "true" : "false");
+	}
+
+	void OnTick(float)
+	{
+		if (!g_tickLogged.exchange(true))
+			LogGameThread("the first tick");
+	}
 }
 
 extern "C" __declspec(dllexport) PluginInfo* GetPluginInfo() { return &g_info; }
@@ -70,7 +91,12 @@ PluginField<SDK::UCrCraftingComponent*> g_craftComponent = SR_FIELD(SDK::UCrCraf
 // The Game-SDK globals: the loader's, then this module's SDK after Init.
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 {
-	if (!PluginSdkRuntime::Init(self->hooks))
+	const bool haveGlobals = PluginSdkRuntime::Init(self->hooks);
+	g_self = self;
+	LogGameThread("PluginInit");
+	if (self->hooks->Engine->RegisterOnTick)
+		self->hooks->Engine->RegisterOnTick(OnTick);
+	if (!haveGlobals)
 	{
 		self->logger->Warn(self, "Globals: none from the loader; the SDK keeps its Offsets::");
 		return true;
@@ -90,7 +116,11 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 		PluginSdkRuntime::OnSdkBuild() ? "yes" : "no");
 	return true;
 }
-extern "C" __declspec(dllexport) void PluginShutdown() {}
+extern "C" __declspec(dllexport) void PluginShutdown()
+{
+	if (g_self && g_self->hooks && g_self->hooks->Engine && g_self->hooks->Engine->UnregisterOnTick)
+		g_self->hooks->Engine->UnregisterOnTick(OnTick);
+}
 
 extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPluginHookScanner* scan)
 {
