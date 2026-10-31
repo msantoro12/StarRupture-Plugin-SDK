@@ -151,6 +151,12 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		req.hookName = "Probe::MapKeyOnlyRefused";
 		req.pattern  = nullptr;
 		scan->Resolve(self, &req);
+		// Own rows and no pattern: the rows decide.
+		const PluginScanCandidate rows[] = { Row(kCLs[0], kP1), Row(kCLs[1], kP1) };
+		req.hookName       = "Probe::MapKeyRowsOnly";
+		req.candidates     = rows;
+		req.candidateCount = 2;
+		scan->Resolve(self, &req);
 	}
 
 	// Fields. ACrCrafter::CraftComponent moved (0x6D8 on CL-127004, 0x6E0 on
