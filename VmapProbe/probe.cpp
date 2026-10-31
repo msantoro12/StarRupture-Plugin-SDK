@@ -245,6 +245,23 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		Field(self, scan, "Field::NativeNoRow_FailsOn128786", "ACrPackageTransportReplicator", "NativeMember", PLUGIN_FIELD_NATIVE, 8, 0x2C0, built, 1);
 	}
 
+	// The loader map's rows come first. A native member only the map holds:
+	// its row on both builds, with no row of the probe's.
+	Field(self, scan, "ACrPackageTransportReplicator::SendingTime", "ACrPackageTransportReplicator", "SendingTime", PLUGIN_FIELD_NATIVE, 4, 0x2C0, nullptr, 0);
+	// Fails: the probe's own row disagrees with the map's for that build.
+	{
+		const PluginFieldCandidate wrong[] = { { kCLs[0], 0x40, 8, 0, nullptr } };
+		Field(self, scan, "UWorld::NetDriver", "UWorld", "NetDriver", 0, 8, 0x38, wrong, 1);
+	}
+	// The map's key names another member: its rows are set aside, and
+	// reflection answers.
+	Field(self, scan, "UWorld::GameState", "UWorld", "LineBatchers", 0, 0x20, 0xF0, nullptr, 0);
+	// Fails: a native offset past the end of its class (0x5C8 bytes).
+	{
+		const PluginFieldCandidate past[] = { { kCLs[0], 0x5C4, 8, 0, nullptr }, { kCLs[1], 0x5C4, 8, 0, nullptr } };
+		Field(self, scan, "Field::NativePastClass_Fails", "ACrPackageTransportReplicator", "NativeMember", PLUGIN_FIELD_NATIVE, 8, 0x5C4, past, 2);
+	}
+
 	// The same member through the helpers and the probe's own map.
 	if (PluginVersionMap::ResolveFields(scan, self, g_craftComponent))
 		self->logger->Info(self, "Helper: %s at 0x%X", g_craftComponent.key, g_craftComponent.offset);
