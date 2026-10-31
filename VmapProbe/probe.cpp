@@ -139,6 +139,20 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		Ask(self, scan, "Probe::AddressOnly", kNone, rows, 2);
 	}
 
+	// Map keys. The loader's map holds none yet: the own pattern decides, and a
+	// key-only request is refused, naming the key.
+	{
+		PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
+		req.hookName = "Probe::MapKeyOwnPattern";
+		req.pattern  = kP1;
+		req.kind     = PLUGIN_SCAN_FUNCTION_START;
+		req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_MAP_KEY;
+		scan->Resolve(self, &req);
+		req.hookName = "Probe::MapKeyOnlyRefused";
+		req.pattern  = nullptr;
+		scan->Resolve(self, &req);
+	}
+
 	// Fields. ACrCrafter::CraftComponent moved (0x6D8 on CL-127004, 0x6E0 on
 	// CL-128786); UCrUW_MainMenuWidget::ButtonsIndexes too (0x670, 0x698).
 	const PluginFieldCandidate craft[] = { { kCLs[0], 0x6D8, 8, 0, nullptr }, { kCLs[1], 0x6E0, 8, 0, nullptr } };
