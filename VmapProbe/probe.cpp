@@ -169,24 +169,46 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		Ask(self, scan, "Probe::AddressOnly", kNone, rows, 2);
 	}
 
-	// Map keys. The loader's map holds none yet: the own pattern decides, and a
-	// key-only request is refused, naming the key.
+	// Map keys, against the loader's own map.
+	const auto key = [&](const char* name, int kind, const char* pattern, const PluginScanCandidate* rows = nullptr,
+		uint32_t count = 0, int32_t resultOffset = 0, int32_t followAt = -1) -> uintptr_t
 	{
 		PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-		req.hookName = "Probe::MapKeyOwnPattern";
-		req.pattern  = kP1;
-		req.kind     = PLUGIN_SCAN_FUNCTION_START;
-		req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_MAP_KEY;
-		scan->Resolve(self, &req);
-		req.hookName = "Probe::MapKeyOnlyRefused";
-		req.pattern  = nullptr;
-		scan->Resolve(self, &req);
+		req.hookName       = name;
+		req.pattern        = pattern;
+		req.kind           = kind;
+		req.flags          = PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_MAP_KEY | (followAt >= 0 ? PLUGIN_SCAN_FLAG_FOLLOW_REL32 : 0);
+		req.resultOffset   = resultOffset;
+		req.followRel32At  = followAt;
+		req.candidates     = rows;
+		req.candidateCount = count;
+		return scan->Resolve(self, &req);
+	};
+	{
+		// A global key only: the map's row for the running build.
+		const uintptr_t beginPlay = key("UWorld::BeginPlay", PLUGIN_SCAN_FUNCTION_START, nullptr);
+		// An own row for this very exe: agrees with the map's pick, or AMBIGUOUS.
+		const uint32_t at = beginPlay ? static_cast<uint32_t>(beginPlay - reinterpret_cast<uintptr_t>(base)) : 0;
+		const PluginScanCandidate same[] = { Row(kCLs[0], nullptr, stamp, size, at), Row(kCLs[1], nullptr, stamp, size, at) };
+		key("UWorld::BeginPlay", PLUGIN_SCAN_FUNCTION_START, nullptr, same, 2);
+		const PluginScanCandidate off[] = { Row(kCLs[0], nullptr, stamp, size, at + 0x10), Row(kCLs[1], nullptr, stamp, size, at + 0x10) };
+		key("UWorld::BeginPlay", PLUGIN_SCAN_FUNCTION_START, nullptr, off, 2);
+		// The map holds GWorld as DATA: set aside, the own pattern decides.
+		key("GWorld", PLUGIN_SCAN_FUNCTION_START, kP1);
+		// Not in the map: the own pattern decides; with nothing of its own, refused.
+		key("Probe::MapKeyOwnPattern", PLUGIN_SCAN_FUNCTION_START, kP1);
+		key("Probe::MapKeyOnlyRefused", PLUGIN_SCAN_FUNCTION_START, nullptr);
 		// Own rows and no pattern: the rows decide.
 		const PluginScanCandidate rows[] = { Row(kCLs[0], kP1), Row(kCLs[1], kP1) };
-		req.hookName       = "Probe::MapKeyRowsOnly";
-		req.candidates     = rows;
-		req.candidateCount = 2;
-		scan->Resolve(self, &req);
+		key("Probe::MapKeyRowsOnly", PLUGIN_SCAN_FUNCTION_START, nullptr, rows, 2);
+		// A site is this plugin's own key: the loader's ModLoader/ site of the
+		// same name is not it, and a site with no pattern is refused.
+		key("HandleCrashInternal_FatalReportCallSite", PLUGIN_SCAN_IN_FUNCTION, kP1);
+		key("Probe::SiteOnlyRefused", PLUGIN_SCAN_IN_FUNCTION, nullptr);
+		// The fingerprint vectors: the [Map] line shows fp 0xB3405899, then
+		// 0x2D1AC6AE with the rel32 follow.
+		key("Probe::SiteFp", PLUGIN_SCAN_IN_FUNCTION, "48 8b 05 ? ??  ?? ??", nullptr, 0, -4);
+		key("Probe::SiteFpFollow", PLUGIN_SCAN_IN_FUNCTION, "48 8b 05 ? ??  ?? ??", nullptr, 0, -4, 3);
 	}
 
 	// Fields. ACrCrafter::CraftComponent moved (0x6D8 on CL-127004, 0x6E0 on
