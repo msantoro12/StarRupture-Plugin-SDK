@@ -36,6 +36,25 @@ namespace
 	{
 		return { cl, stamp, size, pattern, 0, 0, -1, rva };
 	}
+
+	// Field requests (ResolveField). Offsets are the PDB's on each build.
+	bool Field(IPluginSelf* self, IPluginHookScanner* scan, const char* key, const char* className,
+		const char* member, uint32_t flags, uint32_t size, int32_t builtOffset,
+		const PluginFieldCandidate* rows, uint32_t count)
+	{
+		PluginFieldRequest req = PLUGIN_FIELD_REQUEST_INIT;
+		req.key            = key;
+		req.className      = className;
+		req.member         = member;
+		req.flags          = flags;
+		req.size           = size;
+		req.builtCL        = kCLs[0];
+		req.builtOffset    = builtOffset;
+		req.candidates     = rows;
+		req.candidateCount = count;
+		PluginFieldResult result{};
+		return scan->ResolveField(self, &req, &result);
+	}
 }
 
 extern "C" __declspec(dllexport) PluginInfo* GetPluginInfo() { return &g_info; }
@@ -87,5 +106,39 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 	{
 		const PluginScanCandidate rows[] = { Row(kCLs[0], nullptr, stamp, size, rva), Row(kCLs[1], nullptr, stamp, size, rva) };
 		Ask(self, scan, "Probe::AddressOnly", kNone, rows, 2);
+	}
+
+	// Fields. ACrCrafter::CraftComponent moved (0x6D8 on CL-127004, 0x6E0 on
+	// CL-128786); UCrUW_MainMenuWidget::ButtonsIndexes too (0x670, 0x698).
+	const PluginFieldCandidate craft[] = { { kCLs[0], 0x6D8, 8, 0, nullptr }, { kCLs[1], 0x6E0, 8, 0, nullptr } };
+	// Reflected, with a row per build that agrees: the running build's row.
+	Field(self, scan, "Field::RowsAgree", "ACrCrafter", "CraftComponent", 0, 8, 0x6D8, craft, 2);
+	// Reflected, no rows: the reflected offset.
+	Field(self, scan, "Field::NoRow", "UCrUW_MainMenuWidget", "ButtonsIndexes", 0, 0x50, 0x670, nullptr, 0);
+	// Reflected, by /Script/ path.
+	Field(self, scan, "Field::ByPath", "/Script/Chimera.ACrCrafter", "CraftComponent", 0, 8, 0x6D8, craft, 2);
+	// A whole bool, not a bitfield: mask 0xFF.
+	Field(self, scan, "Field::Bool", "ACrBuildingActorBase", "bCanRename", 0, 1, 0x486, nullptr, 0);
+	// A size row.
+	Field(self, scan, "Field::Size", "ACrCrafter", nullptr, 0, 0x758, -1, nullptr, 0);
+	// Fails: the running build's row disagrees with reflection.
+	{
+		const PluginFieldCandidate stale[] = { { kCLs[0], 0x6D0, 8, 0, nullptr }, { kCLs[1], 0x6D8, 8, 0, nullptr } };
+		Field(self, scan, "Field::StaleRow_Fails", "ACrCrafter", "CraftComponent", 0, 8, 0x6D8, stale, 2);
+	}
+	// Fails: compiled for another size.
+	Field(self, scan, "Field::WrongSize_Fails", "ACrCrafter", "CraftComponent", 0, 4, 0x6D8, craft, 2);
+	// Fails: no such member.
+	Field(self, scan, "Field::NoMember_Fails", "ACrCrafter", "NoSuchMember", 0, 8, 0x10, nullptr, 0);
+	// CHECK: passes only where the compiled offset (CL-127004's) still holds.
+	Field(self, scan, "Field::Check_FailsOn128786", "ACrCrafter", "CraftComponent", PLUGIN_FIELD_CHECK, 8, 0x6D8, craft, 2);
+	Field(self, scan, "Field::CheckSize_FailsOn128786", "ACrCrafter", nullptr, PLUGIN_FIELD_CHECK, 0x758, -1, nullptr, 0);
+	// NATIVE: the running build's row; with no row, the compiled offset on
+	// the build it was compiled for and a failure anywhere else.
+	{
+		const PluginFieldCandidate both[] = { { kCLs[0], 0x2C0, 8, 0, nullptr }, { kCLs[1], 0x2C8, 8, 0, nullptr } };
+		Field(self, scan, "Field::Native", "ACrPackageTransportReplicator", "NativeMember", PLUGIN_FIELD_NATIVE, 8, 0x2C0, both, 2);
+		const PluginFieldCandidate built[] = { { kCLs[0], 0x2C0, 8, 0, nullptr } };
+		Field(self, scan, "Field::NativeNoRow_FailsOn128786", "ACrPackageTransportReplicator", "NativeMember", PLUGIN_FIELD_NATIVE, 8, 0x2C0, built, 1);
 	}
 }
