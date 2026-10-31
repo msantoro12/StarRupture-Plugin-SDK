@@ -1,4 +1,5 @@
-// Test plugin for the loader's per-build locator selection (interface 72).
+// Test plugin for the loader's per-build locator selection (interface 72),
+// field resolution and Game-SDK globals (GetSdkGlobals, in PluginInit).
 // Run it under sr-aobscan --plugin: each request below exercises one rule of
 // memory_scanner/version_map.h, and the expected verdict is in its name.
 //
@@ -6,6 +7,11 @@
 // CL-127004 and CL-128786.
 #include <windows.h>
 #include "plugin_interface.h"
+#include "Basic.hpp"
+#include "CoreUObject_classes.hpp"
+#include "Chimera_classes.hpp"
+#include "version_map.generated.h"
+#include "plugin_version_map.h"
 
 namespace
 {
@@ -58,7 +64,32 @@ namespace
 }
 
 extern "C" __declspec(dllexport) PluginInfo* GetPluginInfo() { return &g_info; }
-extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf*) { return true; }
+// Through plugin_version_map.h, with this probe's own map (version_map.generated.h).
+PluginField<SDK::UCrCraftingComponent*> g_craftComponent = SR_FIELD(SDK::UCrCraftingComponent*, ACrCrafter, CraftComponent, 0);
+
+// The Game-SDK globals: the loader's, then this module's SDK after Init.
+extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
+{
+	if (!PluginSdkRuntime::Init(self->hooks))
+	{
+		self->logger->Warn(self, "Globals: none from the loader; the SDK keeps its Offsets::");
+		return true;
+	}
+	const PluginSdkGlobals* g = PluginSdkRuntime::Globals();
+	const uintptr_t base = SDK::InSDKUtils::GetImageBase();
+	const auto rva = [base](uintptr_t a) { return static_cast<unsigned long long>(a ? a - base : 0); };
+	const uintptr_t sdkObjects = reinterpret_cast<uintptr_t>(SDK::UObject::GObjects.GetTypedPtr());
+	const uintptr_t sdkAppend  = reinterpret_cast<uintptr_t>(SDK::FName::AppendString);
+	self->logger->Info(self, "Globals: GObjects 0x%llX, GNames 0x%llX, AppendString 0x%llX, GWorld 0x%llX",
+		rva(g->gobjects), rva(g->gnames), rva(g->appendString), rva(g->gworld));
+	self->logger->Info(self, "Globals: after InitManually the SDK's GObjects 0x%llX (%s), AppendString 0x%llX (%s)",
+		rva(sdkObjects), sdkObjects == g->gobjects ? "equal" : "DIFFERENT",
+		rva(sdkAppend), sdkAppend == g->appendString ? "equal" : "DIFFERENT");
+	self->logger->Info(self, "Globals: GWorld 0x%llX, the SDK's Offsets::GWorld 0x%X (%s); on the SDK's own build: %s",
+		rva(g->gworld), SDK::Offsets::GWorld, rva(g->gworld) == static_cast<unsigned long long>(SDK::Offsets::GWorld) ? "same" : "different",
+		PluginSdkRuntime::OnSdkBuild() ? "yes" : "no");
+	return true;
+}
 extern "C" __declspec(dllexport) void PluginShutdown() {}
 
 extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPluginHookScanner* scan)
@@ -141,4 +172,8 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		const PluginFieldCandidate built[] = { { kCLs[0], 0x2C0, 8, 0, nullptr } };
 		Field(self, scan, "Field::NativeNoRow_FailsOn128786", "ACrPackageTransportReplicator", "NativeMember", PLUGIN_FIELD_NATIVE, 8, 0x2C0, built, 1);
 	}
+
+	// The same member through the helpers and the probe's own map.
+	if (PluginVersionMap::ResolveFields(scan, self, g_craftComponent))
+		self->logger->Info(self, "Helper: %s at 0x%X", g_craftComponent.key, g_craftComponent.offset);
 }
