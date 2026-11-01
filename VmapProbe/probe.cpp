@@ -26,8 +26,17 @@ namespace
 	// Two real changelists, so one row is exact on either exe.
 	const uint32_t kCLs[] = { 127004, 128786 };
 
+	// The probe takes everything from the loader, so it declares
+	// PLUGIN_MAP_MIGRATED. The admission matrix builds it with another tail:
+	// /DVMAP_PROBE_BUILT_CL=<n> and /DVMAP_PROBE_FLAGS=<flags>.
+#ifndef VMAP_PROBE_BUILT_CL
+#define VMAP_PROBE_BUILT_CL PLUGIN_GAME_BUILT_CL
+#endif
+#ifndef VMAP_PROBE_FLAGS
+#define VMAP_PROBE_FLAGS PLUGIN_MAP_MIGRATED
+#endif
 	PluginInfo g_info = { "VmapProbe", "1.0", "test", "Per-build locator selection probe",
-		PLUGIN_INTERFACE_VERSION, PLUGIN_TARGET_CLIENT };
+		PLUGIN_INTERFACE_VERSION, PLUGIN_TARGET_CLIENT, VMAP_PROBE_BUILT_CL, VMAP_PROBE_FLAGS };
 
 	uintptr_t Ask(IPluginSelf* self, IPluginHookScanner* scan, const char* name, const char* pattern,
 		const PluginScanCandidate* rows, uint32_t count)
