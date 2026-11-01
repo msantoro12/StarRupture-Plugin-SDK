@@ -14,6 +14,7 @@ This guide covers building the mod loader from source, creating new plugins, the
 2. [Project Structure](#project-structure)
 3. [Creating a Plugin](#creating-a-plugin)
 4. [Plugin Lifecycle](#plugin-lifecycle)
+   - [Load and unload settings](#load-and-unload-settings)
 5. [Plugin Manifest & Auto-Update](#plugin-manifest--auto-update)
 6. [API Reference](#api-reference)
    - [IPluginSelf](#ipluginself)
@@ -256,6 +257,60 @@ Game closes (or plugin hot-unloaded):
         -- free resources
         -- clear self pointer
 ```
+
+### Load and unload settings
+
+A plugin that keeps state for a whole play session, or owns something the loader cannot see, can say
+when it may be loaded and unloaded while the game runs. Without this the loader will load, unload and
+reload it at any time, from the overlay, the console or RCON, mid-session included.
+
+**Two settings in `PluginInfo::mapFlags` (v73).** One for load, one for unload; a reload is both.
+`PluginReload` has three values:
+
+| Value | Load | Unload (and the unload half of a reload) |
+|---|---|---|
+| `PluginReload::ANYTIME` | Any time. **The default** (0) | Any time |
+| `PluginReload::MENU` | Only while no game world is running (the splash or the main menu). Refused during a session with "Return to the main menu to reload this plugin" | Same |
+| `PluginReload::RESTART` | Only when the loader loads plugins at startup. Refused later with "This plugin requires a game restart" | Never at run time. The plugin list shows "Unload not supported" |
+
+Set them with `PluginLoadSetting` and `PluginUnloadSetting`, OR-ed into `mapFlags` with the other
+flags. A plugin that sets nothing is ANYTIME for both, as is every plugin built before v73: the bits
+live in the spare part of `mapFlags`, so no member of `PluginInfo` moved and old plugins read 0. A
+persistent-ID plugin that must see the whole session, and may only change at the main menu:
+
+```cpp
+info.mapFlags = PLUGIN_MAP_MIGRATED | PluginLoadSetting(PluginReload::MENU) | PluginUnloadSetting(PluginReload::MENU);
+```
+
+- "A world is running" means ChimeraMain, the gameplay world, has begun play and not ended. The
+  main menu and the splash have none. The loader works this out from its own world events.
+- The loader checks before it touches the plugin, on every path: the overlay buttons, **LOAD NEW**,
+  the `reload`, `unload`, `load` and `rescan` commands including `all`, and a command run through
+  RCON or Server Utility. A refused plugin is left running exactly as it was, and the reason goes back
+  to whoever asked: the plugin list shows it in place of the buttons, and the console (so RCON) prints it.
+- A DLL has to be loaded to be asked its settings, so a new DLL refused at **LOAD NEW** is loaded far
+  enough for `GetPluginInfo`, then freed before `OnPluginLoadHooks` or `PluginInit` run.
+- Game shutdown unloads every plugin whatever these say. `PluginShutdown` still runs at exit.
+- A reload needs both settings to allow it, and is refused before it starts. A plugin with unload
+  ANYTIME and load RESTART can be unloaded, and then only comes back at the next start.
+- The loader never calls into the plugin to ask. For a state that changes while the game runs, use
+  the busy reason below.
+
+**A busy reason.** `hooks->Engine->SetBusyReason(self, "GPU work in flight")` marks the plugin busy; null
+or `""` clears it. While it is set the loader refuses an unload or a reload before anything is shut
+down, shows "Unload blocked: GPU work in flight" in the plugin list and prints it on the console, and
+the plugin keeps running. It is the plugin's own state, set and cleared from any thread, and the
+loader only reads it. Keep it short plain text (cut at 80 characters), and clear it when the work is
+done. A plugin that is unloaded or reloaded starts with none. A plugin that owns native textures and
+GPU work in flight would mark itself busy while that work is outstanding:
+
+```cpp
+// MiniMap-style: busy while the renderer has GPU work in flight.
+hooks->Engine->SetBusyReason(self, "GPU work in flight");   // submit
+hooks->Engine->SetBusyReason(self, nullptr);                // the fence has signalled
+```
+
+A MENU or RESTART refusal is said first when both apply. See [hooks->Engine](#hooks-engine).
 
 ---
 
@@ -1148,6 +1203,10 @@ static void ApplySpeed()
 - Read false as "post it or wait", never as "this is a worker thread". Posting is always safe.
 - Any thread may call it. It is a thread-id compare: no lock, no allocation.
 - The slot is filled by every v72 loader, client and server.
+
+**Busy reason (v73).** `SetBusyReason(self, reason)` makes the loader refuse to unload or reload the
+calling plugin until the reason is cleared (null or `""`). Any thread may call it. See
+[Load and unload settings](#load-and-unload-settings).
 
 ---
 
