@@ -2,7 +2,9 @@
 // field resolution, Game-SDK globals (GetSdkGlobals, in PluginInit) and
 // IsGameThread (false in PluginInit at startup, true in the first tick).
 // Run it under sr-aobscan --plugin: each request below exercises one rule of
-// memory_scanner/version_map.h, and the expected verdict is in its name.
+// memory_scanner/version_map.h, and the expected verdict is in its name. Map
+// keys and fields go through the SDK's plugin_map.h helpers, the probe's own
+// map through plugin_version_map.h.
 //
 // The two patterns are BetterDrone's FUNCTION_START locators, unique on
 // CL-127004 and CL-128786.
@@ -50,18 +52,8 @@ namespace
 		const char* member, uint32_t flags, uint32_t size, int32_t builtOffset,
 		const PluginFieldCandidate* rows, uint32_t count)
 	{
-		PluginFieldRequest req = PLUGIN_FIELD_REQUEST_INIT;
-		req.key            = key;
-		req.className      = className;
-		req.member         = member;
-		req.flags          = flags;
-		req.size           = size;
-		req.builtCL        = kCLs[0];
-		req.builtOffset    = builtOffset;
-		req.candidates     = rows;
-		req.candidateCount = count;
-		PluginFieldResult result{};
-		return scan->ResolveField(self, &req, &result);
+		PluginFieldSpec field{ key, className, member, flags, size, builtOffset };
+		return PluginMap::ResolveField(scan, self, field, rows, count, kCLs[0]);
 	}
 
 	// IsGameThread, once in PluginInit and once in the first tick. The
@@ -69,6 +61,10 @@ namespace
 	// slots are checked before use.
 	IPluginSelf*      g_self = nullptr;
 	std::atomic<bool> g_tickLogged{ false };
+
+	// GWorld through PluginMap::Global, compared in PluginInit with the
+	// loader's GetSdkGlobals.
+	SDK::UWorld**     g_gworld = nullptr;
 
 	void LogGameThread(const char* where)
 	{
@@ -87,6 +83,8 @@ namespace
 extern "C" __declspec(dllexport) PluginInfo* GetPluginInfo() { return &g_info; }
 // Through plugin_version_map.h, with this probe's own map (version_map.generated.h).
 PluginField<SDK::UCrCraftingComponent*> g_craftComponent = SR_FIELD(SDK::UCrCraftingComponent*, ACrCrafter, CraftComponent, 0);
+// Through plugin_map.h alone: the loader's map and the built offset.
+PluginField<SDK::UCrCraftingComponent*> g_craftComponentMap = SR_FIELD(SDK::UCrCraftingComponent*, ACrCrafter, CraftComponent, 0);
 
 // The Game-SDK globals: the loader's, then this module's SDK after Init.
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
@@ -114,6 +112,9 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 	self->logger->Info(self, "Globals: GWorld 0x%llX, the SDK's Offsets::GWorld 0x%X (%s); on the SDK's own build: %s",
 		rva(g->gworld), SDK::Offsets::GWorld, rva(g->gworld) == static_cast<unsigned long long>(SDK::Offsets::GWorld) ? "same" : "different",
 		PluginSdkRuntime::OnSdkBuild() ? "yes" : "no");
+	const uintptr_t mapWorld = reinterpret_cast<uintptr_t>(g_gworld);
+	self->logger->Info(self, "Helper: GWorld 0x%llX through the map (%s)",
+		rva(mapWorld), mapWorld == g->gworld ? "same as GetSdkGlobals" : "DIFFERENT");
 	return true;
 }
 extern "C" __declspec(dllexport) void PluginShutdown()
@@ -169,46 +170,47 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		Ask(self, scan, "Probe::AddressOnly", kNone, rows, 2);
 	}
 
-	// Map keys, against the loader's own map.
-	const auto key = [&](const char* name, int kind, const char* pattern, const PluginScanCandidate* rows = nullptr,
-		uint32_t count = 0, int32_t resultOffset = 0, int32_t followAt = -1) -> uintptr_t
+	// Map keys, against the loader's own map, through plugin_map.h.
+	const uint32_t optional = PLUGIN_SCAN_FLAG_OPTIONAL;
+	// A map key with rows of the probe's own: PluginMap::Request plus candidates.
+	const auto withRows = [&](const char* name, const PluginScanCandidate* rows, uint32_t count) -> uintptr_t
 	{
-		PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-		req.hookName       = name;
-		req.pattern        = pattern;
-		req.kind           = kind;
-		req.flags          = PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_MAP_KEY | (followAt >= 0 ? PLUGIN_SCAN_FLAG_FOLLOW_REL32 : 0);
-		req.resultOffset   = resultOffset;
-		req.followRel32At  = followAt;
+		PluginScanRequest req = PluginMap::Request(name, nullptr, PLUGIN_SCAN_FUNCTION_START, optional);
 		req.candidates     = rows;
 		req.candidateCount = count;
 		return scan->Resolve(self, &req);
 	};
 	{
 		// A global key only: the map's row for the running build.
-		const uintptr_t beginPlay = key("UWorld::BeginPlay", PLUGIN_SCAN_FUNCTION_START, nullptr);
+		const auto beginPlay = PluginMap::FunctionAs<void (*)(SDK::UWorld*)>(scan, self, "UWorld::BeginPlay", nullptr,
+			PLUGIN_SCAN_FUNCTION_START, optional);
 		// An own row for this very exe: agrees with the map's pick, or AMBIGUOUS.
-		const uint32_t at = beginPlay ? static_cast<uint32_t>(beginPlay - reinterpret_cast<uintptr_t>(base)) : 0;
+		const uintptr_t beginPlayAt = reinterpret_cast<uintptr_t>(beginPlay);
+		const uint32_t at = beginPlayAt ? static_cast<uint32_t>(beginPlayAt - reinterpret_cast<uintptr_t>(base)) : 0;
 		const PluginScanCandidate same[] = { Row(kCLs[0], nullptr, stamp, size, at), Row(kCLs[1], nullptr, stamp, size, at) };
-		key("UWorld::BeginPlay", PLUGIN_SCAN_FUNCTION_START, nullptr, same, 2);
+		withRows("UWorld::BeginPlay", same, 2);
 		const PluginScanCandidate off[] = { Row(kCLs[0], nullptr, stamp, size, at + 0x10), Row(kCLs[1], nullptr, stamp, size, at + 0x10) };
-		key("UWorld::BeginPlay", PLUGIN_SCAN_FUNCTION_START, nullptr, off, 2);
-		// The map holds GWorld as DATA: set aside, the own pattern decides.
-		key("GWorld", PLUGIN_SCAN_FUNCTION_START, kP1);
+		withRows("UWorld::BeginPlay", off, 2);
+		// The map holds GWorld as DATA: asked for as a function, set aside, the
+		// own pattern decides; as a global, the map's row.
+		PluginMap::Function(scan, self, "GWorld", kP1, PLUGIN_SCAN_FUNCTION_START, optional);
+		g_gworld = PluginMap::Global<SDK::UWorld*>(scan, self, "GWorld");
 		// Not in the map: the own pattern decides; with nothing of its own, refused.
-		key("Probe::MapKeyOwnPattern", PLUGIN_SCAN_FUNCTION_START, kP1);
-		key("Probe::MapKeyOnlyRefused", PLUGIN_SCAN_FUNCTION_START, nullptr);
+		PluginMap::Function(scan, self, "Probe::MapKeyOwnPattern", kP1, PLUGIN_SCAN_FUNCTION_START, optional);
+		PluginMap::Function(scan, self, "Probe::MapKeyOnlyRefused", nullptr, PLUGIN_SCAN_FUNCTION_START, optional);
 		// Own rows and no pattern: the rows decide.
 		const PluginScanCandidate rows[] = { Row(kCLs[0], kP1), Row(kCLs[1], kP1) };
-		key("Probe::MapKeyRowsOnly", PLUGIN_SCAN_FUNCTION_START, nullptr, rows, 2);
+		withRows("Probe::MapKeyRowsOnly", rows, 2);
 		// A site is this plugin's own key: the loader's ModLoader/ site of the
 		// same name is not it, and a site with no pattern is refused.
-		key("HandleCrashInternal_FatalReportCallSite", PLUGIN_SCAN_IN_FUNCTION, kP1);
-		key("Probe::SiteOnlyRefused", PLUGIN_SCAN_IN_FUNCTION, nullptr);
-		// The fingerprint vectors: the [Map] line shows fp 0xB3405899, then
+		PluginMap::Site(scan, self, "HandleCrashInternal_FatalReportCallSite", kP1, PLUGIN_SCAN_IN_FUNCTION, optional);
+		PluginMap::Site(scan, self, "Probe::SiteOnlyRefused", nullptr, PLUGIN_SCAN_IN_FUNCTION, optional);
+		// The fingerprint vectors: the [Map] line shows fp 0xB3405899 (an
+		// offset to follow at, without the flag, is not part of it), then
 		// 0x2D1AC6AE with the rel32 follow.
-		key("Probe::SiteFp", PLUGIN_SCAN_IN_FUNCTION, "48 8b 05 ? ??  ?? ??", nullptr, 0, -4);
-		key("Probe::SiteFpFollow", PLUGIN_SCAN_IN_FUNCTION, "48 8b 05 ? ??  ?? ??", nullptr, 0, -4, 3);
+		PluginMap::Site(scan, self, "Probe::SiteFp", "48 8b 05 ? ??  ?? ??", PLUGIN_SCAN_IN_FUNCTION, optional, -4, 3);
+		PluginMap::Site(scan, self, "Probe::SiteFpFollow", "48 8b 05 ? ??  ?? ??", PLUGIN_SCAN_IN_FUNCTION,
+			optional | PLUGIN_SCAN_FLAG_FOLLOW_REL32, -4, 3);
 	}
 
 	// Fields. ACrCrafter::CraftComponent moved (0x6D8 on CL-127004, 0x6E0 on
@@ -262,7 +264,10 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
 		Field(self, scan, "Field::NativePastClass_Fails", "ACrPackageTransportReplicator", "NativeMember", PLUGIN_FIELD_NATIVE, 8, 0x5C4, past, 2);
 	}
 
-	// The same member through the helpers and the probe's own map.
+	// The same member through the helpers: with the probe's own map, then
+	// with the loader's map alone.
 	if (PluginVersionMap::ResolveFields(scan, self, g_craftComponent))
 		self->logger->Info(self, "Helper: %s at 0x%X", g_craftComponent.key, g_craftComponent.offset);
+	if (PluginMap::ResolveFields(scan, self, g_craftComponentMap))
+		self->logger->Info(self, "Helper: %s at 0x%X, the loader's map alone", g_craftComponentMap.key, g_craftComponentMap.offset);
 }
