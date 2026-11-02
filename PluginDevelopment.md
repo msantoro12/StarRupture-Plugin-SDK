@@ -771,6 +771,42 @@ Each request writes one `[Map]` line:
 [Map] MyPlugin: Spawner: another loaded plugin is also named MyPlugin, so neither reads site keys (refused)
 ```
 
+#### Your own pattern and the shared map
+
+The map and your own patterns do different jobs, and a plugin needs both to be right.
+
+- **The map decides on a build it has a row for.** The loader resolves the key from the row and
+  does not need your pattern to load. That is how a plugin keeps working on a game update before
+  you have released anything.
+- **Your own pattern is the fallback**, and on some loaders the only locator. A loader without the
+  map (a stock build, or one older than v72), a dedicated server, and a game build the map has no
+  row for all resolve your key from your pattern and candidates alone, and v68 refuses a pattern
+  that matches 0 or 2 or more places.
+
+So **your own pattern must match the running game exactly once**, even though a map row can carry
+it. If it does not, your plugin works wherever the map covers for it and is refused everywhere
+else, and nothing on your machine says so: the first player on a loader without the row finds out.
+
+To catch that early, a loader that resolves a key from a map row (or from the latest row's rescan)
+still checks your pattern against the running exe, once per pattern per session and through
+`scan_cache.ini`. If it matches 0 or 2 or more places, `ModLoader\Logs\ModLoader.log` gets one
+warning, naming your plugin, the key and the count, and your plugin still loads on the row:
+
+```
+[Map] MyPlugin: UCrMassSaveSubsystem::OnPostSaveLoaded: its own pattern matches 2 times on this exe, and a pattern must match exactly once; the map row is carrying it, but a loader without the row refuses this plugin. Make the pattern unique.
+```
+
+Look for `its own pattern matches` in the log after you test on a game build the map covers. When
+you see it, lengthen the pattern or anchor it on something more distinctive, as in
+[Pattern Not Found, Not Unique, or the Wrong Kind](#pattern-not-found-not-unique-or-the-wrong-kind),
+and look again. A pattern the loader's map keeps current for you still has to be unique on the
+builds you ship against.
+
+**Check it on every build, not just yours.** The starrupture-ci pipeline scans plugins against
+each new game build. You can opt your plugin into it, so a pattern that stops being unique is
+caught before a player finds it: see
+[Adding your plugin to CI](https://github.com/msantoro12/starrupture-ci#adding-your-plugin-to-ci).
+
 #### Game-class fields (ResolveField)
 
 From v72, `scan->ResolveField` gives the offset of a game-class member on the running build, so a
@@ -2921,7 +2957,10 @@ touching the pattern -- it lists every match with its section and containing fun
 
 - **Not found.** Verify the pattern against a disassembler (IDA, Ghidra, x64dbg). Game updates
   change binary layouts. Check that client-only patterns are not scanned in a server build.
-- **Not unique.** The pattern matched more than once, which refuses the plugin. Lengthen it or
+- **Not unique.** The pattern matched more than once, which refuses the plugin. (With a map row
+  for the running build the plugin still loads, and the log only warns `its own pattern matches N
+  times`; see [Your own pattern and the shared map](#your-own-pattern-and-the-shared-map). Fix it
+  all the same.) Lengthen it or
   anchor it on something more distinctive; the report gives you every match as an RVA you can paste
   straight into a disassembler. Do not assume the lowest address is the right one -- that is exactly
   the guess v68 exists to stop.
