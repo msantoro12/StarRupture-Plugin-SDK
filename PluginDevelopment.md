@@ -730,7 +730,7 @@ builds you ship against.
 **Check it on every build, not just yours.** The starrupture-ci pipeline scans plugins against
 each new game build. You can opt your plugin into it, so a pattern that stops being unique is
 caught before a player finds it: see
-[Adding your plugin to CI](https://github.com/msantoro12/starrupture-ci#adding-your-plugin-to-ci).
+[Adding your plugin to CI](https://github.com/msantoro12/starrupture-ci/blob/main/.github/sr-pipeline/README.md#adding-your-plugin-to-ci).
 
 #### Game-class fields (ResolveField)
 
