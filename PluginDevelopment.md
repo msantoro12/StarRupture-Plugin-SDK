@@ -312,6 +312,35 @@ hooks->Engine->SetBusyReason(self, nullptr);                // the fence has sig
 
 A MENU or RESTART refusal is said first when both apply. See [hooks->Engine](#hooks-engine).
 
+### When a callback crashes
+
+The loader catches a native fault (an access violation and the like) raised in your plugin's own code
+while it is calling one of your callbacks: tick and game-event callbacks, panel and widget renders,
+panel-closed and config-changed callbacks, keybinds and the mouse wheel, console commands and their
+output and completion callbacks, game-menu rows, network and HTTP handlers and filters, delegate hooks,
+pak callbacks and `PostToGameThread` tasks. Your plugin is then switched off: the loader calls none of
+its callbacks again until it is unloaded or reloaded, the Plugins tab shows it as **Crashed** with the
+fault code and the callback, and the log has the fault and a stack. The game keeps running, and RELOAD
+loads it fresh. A busy reason set before the crash does not block that reload.
+
+This is a safety net, not a licence: write code that does not fault. What it does not cover:
+
+- **Faults outside your code.** A fault in game or loader code that your callback called into (a
+  `ProcessEvent` on a dead object, say) still crashes the game, because carrying on past half-finished
+  engine code can leave its locks held and freeze it. The log names your plugin and the callback.
+- **Code the loader does not call.** Detours you place on game functions, threads you start, and your
+  DllMain run outside any loader call. They are not guarded, and they keep running after a switch-off.
+- **C++ exceptions.** They are not caught here; they reach the caller's `catch` as before.
+- **Your own state.** A fault unwinds past your frames without running their destructors, so a lock you
+  held may still be held. `PluginShutdown` still runs on unload or reload after a crash, under the
+  hang watchdog: do not let it block on a lock your callbacks take.
+- **Leftovers on screen.** After a render fault the loader puts ImGui's stacks back as they were, but a
+  draw call cut off halfway can leave one bad frame, and ImGui may flash its error tooltip once.
+- **HTTP filters fail closed.** A crashed request filter denies every request until its plugin is reloaded.
+
+On unload or reload the loader also drops everything your plugin registered and did not unregister,
+including `PostToGameThread` tasks and console commands still queued for it.
+
 ---
 
 ## Plugin Manifest & Auto-Update
