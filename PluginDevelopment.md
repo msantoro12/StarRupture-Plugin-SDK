@@ -1553,8 +1553,7 @@ Exclusive capture always wins. While the modloader window, any plugin panel, or 
 **Keyboard navigation.** Dear ImGui's own keyboard navigation (Tab and Shift+Tab, the arrow keys, Space or Enter to use the picked widget) is on in your panels while exclusive capture is active, so a panel built from ordinary widgets works without the mouse and you write nothing for it. The loader turns it off again when no loader window, plugin panel or capture token is open, and the player can switch it off in the Settings tab (`[UI] KeyboardNavigation=0`). Two things follow for plugin authors:
 
 - It does not run in cooperative mode. A focused passthrough window would otherwise make ImGui claim every key (`io.WantCaptureKeyboard` follows navigation) and cut WASD out of the game, so the table above holds: only a focused text field keeps the keyboard.
-- The loader still dispatches your registered keybinds while a panel is open, navigation keys included. A keybind on Tab, Enter, Space or an arrow key fires as the player navigates, so avoid them for actions in a plugin that has a panel, or check your own panel's state first. Keybinds are already held back while a text field has focus.
-
+- The loader still dispatches your registered keybinds while a panel is open, navigation keys included. A keybind on Tab, Enter, Space, an arrow key or 1 to 5 (the loader window's page hotkeys) fires as the player uses them, so avoid them for actions in a plugin that has a panel, or check your own panel's state first. Keybinds are already held back while a text field has focus.
 
 **Direct draw lists (v48)** give you `ImDrawList`-level drawing from inside a panel or widget callback, for anything the widget API can't express -- custom gauges, minimap overlays, connector lines between widgets, full-screen HUD annotations.
 
