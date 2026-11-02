@@ -695,13 +695,16 @@ The map and your own patterns do different jobs, and a plugin needs both to be r
   does not need your pattern to load. That is how a plugin keeps working on a game update before
   you have released anything.
 - **Your own pattern is the fallback**, and on some loaders the only locator. A loader without the
-  map (a stock build, or one older than v72), a dedicated server, and a game build the map has no
-  row for all resolve your key from your pattern and candidates alone, and v68 refuses a pattern
-  that matches 0 or 2 or more places.
+  map (a stock build, or one older than v72), a dedicated server, and a game build where none of
+  the map's rows resolve all take your key from your pattern and candidates alone, and v68 refuses
+  a pattern that matches 0 or 2 or more places. (With no row for the running build the loader
+  rescans the latest row's pattern, and your pattern then has to agree with it; one that matches
+  twice is skipped there, and the plugin loads if that row resolves.)
 
 So **your own pattern must match the running game exactly once**, even though a map row can carry
-it. If it does not, your plugin works wherever the map covers for it and is refused everywhere
-else, and nothing on your machine says so: the first player on a loader without the row finds out.
+it. If it does not, your plugin works wherever the map covers for it and is refused wherever no
+row resolves the key, and nothing on your machine says so: the first player on a loader without a
+usable row finds out.
 
 To catch that early, a loader that resolves a key from a map row (or from the latest row's rescan)
 still checks your pattern against the running exe, once per pattern per session and through
@@ -709,8 +712,14 @@ still checks your pattern against the running exe, once per pattern per session 
 warning, naming your plugin, the key and the count, and your plugin still loads on the row:
 
 ```
-[Map] MyPlugin: UCrMassSaveSubsystem::OnPostSaveLoaded: its own pattern matches 2 times on this exe, and a pattern must match exactly once; the map row is carrying it, but a loader without the row refuses this plugin. Make the pattern unique.
+[Map] MyPlugin: UCrMassSaveSubsystem::OnPostSaveLoaded: its own pattern matches 2 times on this exe, and a pattern must match exactly once; a row decides this key and is carrying it, but a loader without that row refuses this plugin. Make the pattern unique.
 ```
+
+A pattern that matches 0 times gets its own wording (`matches 0 times on this exe (stale for this
+build?)`): after a game update your base pattern is expected to go stale before you release, and
+the row carries the plugin until you do. The line is written once per pattern text, so two plugins
+that share a pattern get one line. The count is kept in `scan_cache.ini` per game exe, so later
+launches repeat the line without scanning again.
 
 Look for `its own pattern matches` in the log after you test on a game build the map covers. When
 you see it, lengthen the pattern or anchor it on something more distinctive, as in
