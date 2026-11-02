@@ -338,6 +338,20 @@ This is a safety net, not a licence: write code that does not fault. What it doe
   draw call cut off halfway can leave one bad frame, and ImGui may flash its error tooltip once.
 - **HTTP filters fail closed.** A crashed request filter denies every request until its plugin is reloaded.
 
+**After a crash, expect a restart.** About 3 seconds after the switch-off the loader reloads your plugin
+on the game thread, exactly like RELOAD: `PluginShutdown`, then the DLL is freed, then it is loaded and
+`PluginInit` runs again. It is a fresh start, so your statics and globals are back at their initial
+values; nothing from before the crash survives. Your plugin's [reload setting](#hooks-engine) decides
+whether this happens: ANYTIME restarts, MENU waits until the player is at the main menu, and RESTART
+(load or unload) stays off and the player is told to restart the game. A plugin is restarted
+automatically at most 3 times per session; a 4th crash leaves it off until the game restarts. The
+player can turn automatic restarts off in the loader's Settings tab (`modloader.ini` `[Plugins]`
+`RestartCrashed=0`), and a dedicated server always restarts.
+
+So make `PluginInit` and `PluginShutdown` safe to run again, and do not rely on a crash leaving state
+behind. A crash that happens every time in `PluginInit` or on the first tick will repeat until the limit
+is reached.
+
 On unload or reload the loader also drops everything your plugin registered and did not unregister,
 including `PostToGameThread` tasks and console commands still queued for it.
 
