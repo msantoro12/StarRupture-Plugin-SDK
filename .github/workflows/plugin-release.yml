@@ -224,8 +224,6 @@ jobs:
           SOLUTION: ${{ inputs.solution_file }}
           TAG: ${{ steps.tag.outputs.TAG }}
         run: |
-          # Rule3Check=false: the check scans the whole workspace by default, which here
-          # includes the checked-out game-sdk and runs node out of memory. It runs in PR CI.
           foreach ($variant in $env:VARIANT -split ',') {
             $config = "$variant Release"
             Write-Host "Building configuration: $config"
@@ -233,7 +231,6 @@ jobs:
               /p:Configuration="$config" `
               /p:Platform=x64 `
               /p:PostBuildEventUseInBuild=false `
-              /p:Rule3Check=false `
               /p:ModLoaderBuildTag="$env:TAG" `
               /p:GameSDKRoot="${{ github.workspace }}\game-sdk" `
               /p:PluginSDKInclude="${{ github.workspace }}\plugin-sdk\include" `
