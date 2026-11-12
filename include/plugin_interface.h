@@ -869,6 +869,29 @@
 //      without the flag refuses the Blueprint class (it knows native ones
 //      only), which turns off the feature that lists the key.
 //
+//
+// v76: Image library (hooks->Images, client only, null on server and generic
+//      builds). One place in the loader that loads game images -- item icons
+//      first -- when a plugin is about to draw them, shrinks each to one
+//      stored size and keeps the copy for the session. IPluginImages is
+//      appended at the END of IPluginHooks, so nothing a v70-v75 plugin reads
+//      by offset moved and MIN stays at 70.
+//      An image is named by a PluginImageId, which stays the same for the
+//      whole session: asking for the same item name or object path again,
+//      after a RELOAD say, gives the same id, and the copy is still there.
+//      There is nothing to release. The loader serves the images that were
+//      drawn most recently first, drops a request nobody has drawn lately,
+//      and past its memory cap evicts the image drawn least recently; Get
+//      asks for an evicted image again.
+//      Item, Path, Get and State are callable from any thread, render
+//      callbacks included, and return at once. Get and State take no lock.
+//      UseSets records which sets of images the plugin draws from, for
+//      background preload.
+//      A plugin built for v76 is refused by a loader that ends at 75. The
+//      interface number below moves to 76 with the release that ships this
+//      table; LoadFromUTexture2D and the rest of IPluginImGuiTextures are
+//      unchanged.
+//
 #define PLUGIN_INTERFACE_VERSION_MIN 70
 #define PLUGIN_INTERFACE_VERSION_MAX 75
 #define PLUGIN_INTERFACE_VERSION 75
@@ -2294,7 +2317,8 @@ typedef void* PluginTextureHandle;
 //
 // THREADING RULES
 // ---------------
-// Load* functions perform a blocking GPU copy and MUST be called from a game-
+// Load* functions copy to the GPU (LoadFromRGBA and LoadFromMemory block until
+// it is done; LoadFromUTexture2D queues it) and MUST be called from a game-
 // thread callback (OnExperienceLoadComplete, OnWorldBeginPlay, PluginInit, etc.)
 // -- NOT from inside an ImGui render callback.  Calling them from the render
 // thread blocks the GPU pipeline and will cause crashes with Streamline/DLSS.
@@ -2356,12 +2380,27 @@ struct IPluginImGuiTextures
     PluginTextureHandle (*LoadFromRGBA)(const unsigned char* rgba, int width, int height, const char* name);
 
     // Copy a UTexture2D into a modloader-owned GPU resource and return a handle.
-    // Blocks the calling thread until the GPU copy completes (~1-50ms).
+    // The copy is queued on the GPU and the call returns without waiting for it;
+    // the handle draws nothing (Image keeps its space) until the copy is done,
+    // usually a frame or two later. Past 8 copies in one engine tick, or with 8
+    // still on the GPU, a call first waits for the oldest one (up to 1 s); if
+    // that wait runs out, it and every later call over those limits return NULL
+    // until a copy finishes. A source whose memory is paging in is waited for
+    // up to 250 ms; past that the call returns NULL, and so does every call
+    // that would make a new copy until that source's memory is resident. If it
+    // is still not resident after 10 s, no more engine textures are copied this
+    // session. A name already loaded still returns its handle.
     // Call from a game-thread callback (OnExperienceLoadComplete etc.), NOT from
     // a render callback -- doing so will stall the render thread and crash with DLSS.
     // The copy is yours to keep; the engine may GC the source freely after this call.
     // Call FreeTexture when done -- handles persist until explicitly freed.
-    // Returns NULL if D3D12 is not ready or the texture has no GPU resource yet.
+    // Returns NULL if D3D12 is not ready, the texture has no GPU resource yet or
+    // is one the GPU writes, video memory is short or still paging in, the GPU
+    // is behind on earlier copies, or the copy failed. NULL means not copied
+    // (nothing to free): ask again on a later tick, and the call may succeed,
+    // unless engine-texture copies have stopped for the session (the device was
+    // lost, a source was not resident after 10 s, or the GPU could not report a
+    // copy's end), which the log reports once.
     // Throws std::out_of_range if all slots are in use.
     PluginTextureHandle (*LoadFromUTexture2D)(SDK::UTexture2D* texture, const char* name);
 
@@ -3644,6 +3683,67 @@ struct IPluginPak
 	const char* (*ResultToString)(PluginPakResult result);
 };
 
+// ---------------------------------------------------------------------------
+// Image library (v76) -- client only
+//
+// Retrieved via hooks->Images (nullptr on server/generic). An id names one game
+// image for the whole session. The loader reads the image the first time it is
+// wanted, keeps a small copy, and gives the copy up only when its memory cap is
+// reached (the image drawn least recently first). There is no Release.
+//
+// THREADING RULES
+// ---------------
+// Item, Path, Get, State and UseSets can be called from any thread, including
+// an ImGui render callback, and return at once. FromTexture reads a game
+// object, so it is game thread only.
+// ---------------------------------------------------------------------------
+
+// An id names one game image for the whole session. 0 is never valid.
+typedef uint32_t PluginImageId;
+
+enum PluginImageState : int32_t
+{
+	PLUGIN_IMAGE_NONE     = 0, // id 0, unknown, failed, over the cap, no version map rows on this build, or the library is off
+	PLUGIN_IMAGE_WAITING  = 1, // asked for, being read
+	PLUGIN_IMAGE_READY    = 2, // Get returns a texture
+	PLUGIN_IMAGE_NO_IMAGE = 3, // the item or building resolved and has no image
+};
+
+enum PluginImageSet : uint32_t
+{
+	PLUGIN_IMAGE_SET_ITEMS     = 1u << 0,
+	PLUGIN_IMAGE_SET_BUILDINGS = 1u << 1,
+};
+
+struct IPluginImages
+{
+	// Any thread. Returns at once. The same name or path always gives the same id.
+	PluginImageId (*Item)(const IPluginSelf* self, const char* uniqueItemName);
+	PluginImageId (*Path)(const IPluginSelf* self, const char* textureObjectPath); // "/Game/.../T_X.T_X"
+
+	// Game thread only (returns 0 and logs once elsewhere). Keeps no pointer.
+	PluginImageId (*FromTexture)(const IPluginSelf* self, SDK::UTexture2D* texture);
+
+	// Any thread, render callbacks included. Null until READY. Valid for this frame only:
+	// pass it straight to Image or DL_AddImage and never keep it.
+	// Marks the image as seen, and asks for it again if it was evicted.
+	PluginTextureHandle (*Get)(PluginImageId id);
+	int (*State)(PluginImageId id); // a PluginImageState
+
+	// The sets this plugin draws from, for background preload (PluginImageSet
+	// bits). 0 clears. Dropped when the plugin unloads.
+	void (*UseSets)(const IPluginSelf* self, uint32_t sets);
+};
+
+static_assert(sizeof(PluginImageId) == 4, "v76 layout");
+static_assert(offsetof(IPluginImages, Item)        ==  0, "v76 layout");
+static_assert(offsetof(IPluginImages, Path)        ==  8, "v76 layout");
+static_assert(offsetof(IPluginImages, FromTexture) == 16, "v76 layout");
+static_assert(offsetof(IPluginImages, Get)         == 24, "v76 layout");
+static_assert(offsetof(IPluginImages, State)       == 32, "v76 layout");
+static_assert(offsetof(IPluginImages, UseSets)     == 40, "v76 layout");
+static_assert(sizeof(IPluginImages)                == 48, "v76 layout");
+
 struct IPluginHooks
 {
 	IPluginSpawnerHooks*   Spawner;        // v14
@@ -3670,7 +3770,11 @@ struct IPluginHooks
 	IPluginConsole*        Console;         // v63 -- appended at end, do not relocate
 	IPluginGameMenu*       GameMenu;        // v64 -- client only, null on server/generic; appended at end, do not relocate
 	IPluginPak*            Pak;             // v67 -- all builds; appended at end, do not relocate
+	IPluginImages*         Images;          // v76 -- client only, null on server/generic; appended at end, do not relocate
 };
+
+static_assert(offsetof(IPluginHooks, Pak)    == 184, "v67 layout");
+static_assert(offsetof(IPluginHooks, Images) == 192, "v76 starts where v67 ended");
 
 // ---------------------------------------------------------------------------
 // Plugin build target
