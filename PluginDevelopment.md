@@ -39,6 +39,7 @@ This guide covers building the mod loader from source, creating new plugins, the
      - [hooks->NetMode (IPluginNetModeInfo) -- Server + Client](#hooks-netmode)
      - [hooks->ImGuiTextures (IPluginImGuiTextures) -- Client only](#hooks-imguitextures)
        - [Item icons (item_icons.h)](#item-icons-item_iconsh)
+       - [Drawing library images (plugin_images.h)](#drawing-library-images-plugin_imagesh)
      - [hooks->Splash (IPluginSplash) -- Client only](#hooks-splash)
      - [hooks->HttpServer (IPluginHttpServer) -- Server only](#hooks-httpserver)
      - [hooks->Crafting (IPluginCraftingEvents)](#hooks-crafting)
@@ -2280,6 +2281,37 @@ g_icons.Shutdown();
 - `IconIs(name, textureId)` -- `true` if the item's icon is the texture whose `GetFullName()` is `textureId`. Game thread.
 
 `Tick` and `IconIs` run on the game thread. `Init` can run in `PluginInit`: it only posts the scan to the game thread. `Get`, `Has` and `Draw` can run on any thread, so call them from the render callback. `Shutdown` frees the handles and touches no game object. Nothing keeps a game object between ticks.
+
+##### Drawing library images (plugin_images.h)
+
+When the loader has an image library (`hooks->Images`), `include/plugin_images.h` draws one of its images in a single call. Include it after `plugin_interface.h`.
+
+1. Ask the library for an id, once, and keep the id. The same name always gives the same id.
+2. In the render callback, call `PluginImages::Image` with that id and a size.
+
+```cpp
+#include "plugin_images.h"
+
+static PluginImageId g_ironId = 0;
+
+// PluginInit (any thread)
+if (hooks->Images)
+    g_ironId = hooks->Images->Item(self, "Iron_Plate");
+
+// Render callback: a 20 x 20 image, then the label on the same line
+PluginImages::Image(imgui, hooks, g_ironId, 20.0f, 20.0f);
+imgui->SameLine(0, -1);
+imgui->Text("Iron plate");
+```
+
+What one call does:
+
+- If the rectangle is scrolled out of view, it reserves the space and does not ask the library, so rows nobody sees are never loaded.
+- If the image is ready, it draws it.
+- If not, it reserves the same space, so the row keeps its height and the text after it does not move when the image arrives.
+- With the `CollapseNoImage` flag, an item that has no image takes no space: `PluginImages::Image(imgui, hooks, id, 20.0f, 20.0f, PluginImages::CollapseNoImage)`.
+
+Where there is no image library (an older loader, or a server or generic build), the call reserves the space and draws nothing, so you do not need to check first. Call it from a render callback; it does not keep the image, so call it again on the next frame.
 
 ---
 
