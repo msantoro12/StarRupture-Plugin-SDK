@@ -2302,8 +2302,8 @@ static PluginImageId g_ironId = 0;
 if (hooks->Images)
     g_ironId = hooks->Images->Item(self, "Iron_Plate");
 
-// Render callback: a 20 x 20 image, then the label on the same line
-PluginImages::Image(imgui, hooks, g_ironId, 20.0f, 20.0f);
+// Render callback: a 32 x 32 image, then the label on the same line
+PluginImages::Image(imgui, hooks, g_ironId, 32.0f, 32.0f);
 imgui->SameLine(0, -1);
 imgui->Text("Iron plate");
 ```
@@ -2327,9 +2327,13 @@ imgui->Text("Iron plate");
 - If the rectangle is scrolled out of view, it reserves the space and does not ask the library.
 - If the image is ready, it draws it.
 - If not, it reserves the same space, so the row keeps its height and the text after it does not move when the image arrives.
-- With the `CollapseNoImage` flag, an item that has no image takes no space: `PluginImages::Image(imgui, hooks, id, 20.0f, 20.0f, PluginImages::CollapseNoImage)`.
+- With the `CollapseNoImage` flag, an item that has no image takes no space: `PluginImages::Image(imgui, hooks, id, 32.0f, 32.0f, PluginImages::CollapseNoImage)`.
 
 The helper keeps nothing, so call it again on the next frame. Call it from a render callback.
+
+**Size.** `w` and `h` are screen pixels. The helper asks the loader for a copy of the image made for exactly that size, so draw at the size you want and do not scale the result yourself. The smallest size is 28 pixels (`PluginImages::kMinSize`): a smaller size is raised to it, and the item takes the raised size, so use `kMinSize` when you lay out a row. Until the copy is ready, the helper draws the stored image scaled into the same box.
+
+If you draw without the helper, call `hooks->Images->GetSized(id, size, &w, &h)` with `size` the longer side in whole pixels. It is `Get` for a known size. When it fills in `w` and `h`, the texture is a copy of exactly that size: draw it at `w` by `h`, with no scaling. When `w` and `h` come back 0, it is the stored image: draw it scaled into your box. Like `Get`, the texture is valid for this frame only.
 
 **The four states.** `State(id)` returns one of these. `Get(id)` returns the texture only when the state is `PLUGIN_IMAGE_READY`, and it is valid for this frame only.
 

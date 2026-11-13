@@ -27,6 +27,8 @@ namespace
 		int   images  = 0;
 		float w = 0.0f, h = 0.0f;
 		int   gets    = 0;
+		int   askedSize = 0;
+		int   copyW = 0, copyH = 0; // what the fake loader answers for a copy
 		int   states  = 0;
 		bool  onScreen = true;
 		PluginTextureHandle handle = nullptr;
@@ -38,12 +40,19 @@ namespace
 	void FakeDummy(float w, float h) { ++g_seen.dummies; g_seen.w = w; g_seen.h = h; }
 	bool FakeIsRectVisible(float, float) { return g_seen.onScreen; }
 	void FakeImage(PluginTextureHandle, float w, float h) { ++g_seen.images; g_seen.w = w; g_seen.h = h; }
-	PluginTextureHandle FakeGet(uint32_t) { ++g_seen.gets; return g_seen.handle; }
+	PluginTextureHandle FakeGetSized(uint32_t, int size, int* w, int* h)
+	{
+		++g_seen.gets;
+		g_seen.askedSize = size;
+		if (w) *w = g_seen.copyW;
+		if (h) *h = g_seen.copyH;
+		return g_seen.handle;
+	}
 	int FakeState(uint32_t) { ++g_seen.states; return g_seen.state; }
 
 	struct FakeImages
 	{
-		PluginTextureHandle (*Get)(uint32_t);
+		PluginTextureHandle (*GetSized)(uint32_t, int, int*, int*);
 		int (*State)(uint32_t);
 	};
 
@@ -59,7 +68,7 @@ namespace
 	};
 
 	constexpr int kWaiting = 1, kNoImage = 3; // PLUGIN_IMAGE_WAITING, PLUGIN_IMAGE_NO_IMAGE
-	const float kSize = 20.0f;
+	const float kSize = PluginImages::kMinSize;
 }
 
 int main()
@@ -73,7 +82,7 @@ int main()
 	IPluginImGuiTextures textures{};
 	textures.Image = &FakeImage;
 
-	FakeImages images{ &FakeGet, &FakeState };
+	FakeImages images{ &FakeGetSized, &FakeState };
 	HooksWithTable hooks{ &images, &textures };
 	PluginTextureHandle handle = reinterpret_cast<PluginTextureHandle>(static_cast<size_t>(1));
 
@@ -83,6 +92,45 @@ int main()
 		PluginImages::Image(&imgui, &hooks, 7, kSize, kSize);
 		Check(g_seen.images == 1 && g_seen.dummies == 0, "a ready image is drawn");
 		Check(g_seen.w == kSize && g_seen.h == kSize, "the image is drawn at the size asked for");
+	}
+
+	{
+		Reset();
+		g_seen.handle = handle;
+		PluginImages::Image(&imgui, &hooks, 7, 40.4f, 40.4f);
+		Check(g_seen.askedSize == 40, "the library is asked for the size to be drawn, in whole pixels");
+		Check(g_seen.w == 40.0f && g_seen.h == 40.0f, "a stored picture is drawn scaled into the whole-pixel box");
+	}
+
+	{
+		Reset();
+		g_seen.handle = handle;
+		g_seen.copyW  = 40;
+		g_seen.copyH  = 40;
+		PluginImages::Image(&imgui, &hooks, 7, 40.0f, 40.0f);
+		Check(g_seen.images == 1 && g_seen.w == 40.0f && g_seen.h == 40.0f, "an exact-size copy is drawn at its own size");
+	}
+
+	{
+		Reset();
+		g_seen.handle = handle;
+		PluginImages::Image(&imgui, &hooks, 7, 10.0f, 10.0f);
+		Check(g_seen.askedSize == 28, "a size under the minimum is asked for at the minimum");
+		Check(g_seen.w == 28.0f && g_seen.h == 28.0f, "a size under the minimum is drawn at the minimum");
+	}
+
+	{
+		Reset();
+		g_seen.state = kWaiting;
+		PluginImages::Image(&imgui, &hooks, 7, 10.0f, 10.0f);
+		Check(g_seen.dummies == 1 && g_seen.w == 28.0f && g_seen.h == 28.0f, "the space reserved is the minimum too");
+	}
+
+	{
+		Reset();
+		g_seen.onScreen = false;
+		PluginImages::Image(&imgui, &hooks, 7, 10.0f, 10.0f);
+		Check(g_seen.dummies == 1 && g_seen.w == 28.0f && g_seen.h == 28.0f, "an off-screen rectangle reserves the minimum too");
 	}
 
 	{

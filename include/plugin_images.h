@@ -4,7 +4,7 @@
 //
 // Include after plugin_interface.h. Call from a render callback.
 //
-//   PluginImages::Image(imgui, hooks, id, 20.0f, 20.0f);
+//   PluginImages::Image(imgui, hooks, id, PluginImages::kMinSize, PluginImages::kMinSize);
 //
 // id comes from hooks->Images->Item, Path or FromTexture. Each call does the
 // same four steps:
@@ -15,6 +15,12 @@
 //   3. Otherwise it reserves the space, so a row keeps its height while the
 //      image loads.
 //   4. With CollapseNoImage, an item that has no image takes no space.
+//
+// The size is in screen pixels. A size under kMinSize is raised to it, and the
+// space the call takes is the raised size, so size your row from kMinSize. The
+// size is rounded to whole pixels. The loader keeps a copy of the image made
+// for exactly that size, so draw at the size you want and do not scale the
+// result yourself.
 //
 // Where the loader has no image table (an older loader, a server or generic
 // build), this reserves the space and draws nothing. A plugin built against a
@@ -36,10 +42,20 @@ namespace PluginImages
 		CollapseNoImage = 1u << 0,
 	};
 
+	// The smallest size an image is drawn at, in screen pixels. Below this an
+	// icon cannot be read. Image raises a smaller size to this.
+	constexpr float kMinSize = 28.0f;
+
 	namespace detail
 	{
 		// The value of PLUGIN_IMAGE_NO_IMAGE.
 		constexpr int kNoImage = 3;
+
+		// A size as a whole number of pixels, at least kMinSize.
+		inline float WholePixels(float size)
+		{
+			return size < kMinSize ? kMinSize : static_cast<float>(static_cast<int>(size + 0.5f));
+		}
 
 		template <class Hooks>
 		concept HasImageTable = requires(Hooks* hooks) { hooks->Images; };
@@ -54,13 +70,17 @@ namespace PluginImages
 		}
 	}
 
-	// Draws image id at the cursor, w by h, or reserves that much space.
-	// hooks is the plugin's IPluginHooks; imgui is the render callback's.
+	// Draws image id at the cursor, w by h, or reserves that much space. A size
+	// under kMinSize is raised to it. hooks is the plugin's IPluginHooks; imgui
+	// is the render callback's.
 	template <class Hooks>
 	void Image(IModLoaderImGui* imgui, Hooks* hooks, uint32_t id, float w, float h, unsigned flags = None)
 	{
 		if (!imgui)
 			return;
+
+		w = detail::WholePixels(w);
+		h = detail::WholePixels(h);
 
 		if (!detail::TableIsThere(hooks) || !imgui->IsRectVisible(w, h))
 		{
@@ -70,11 +90,18 @@ namespace PluginImages
 
 		if constexpr (detail::HasImageTable<Hooks>)
 		{
-			if (PluginTextureHandle image = hooks->Images->Get(id))
+			// The loader answers with a copy made for this size, to draw 1:1, or
+			// with the stored picture and no size, to draw scaled into the box.
+			int copyW = 0;
+			int copyH = 0;
+			if (PluginTextureHandle image = hooks->Images->GetSized(id, static_cast<int>(w > h ? w : h), &copyW, &copyH))
 			{
 				if (hooks->ImGuiTextures)
 				{
-					hooks->ImGuiTextures->Image(image, w, h);
+					if (copyW > 0 && copyH > 0)
+						hooks->ImGuiTextures->Image(image, static_cast<float>(copyW), static_cast<float>(copyH));
+					else
+						hooks->ImGuiTextures->Image(image, w, h);
 					return;
 				}
 			}
