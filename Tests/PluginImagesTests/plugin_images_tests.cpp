@@ -108,7 +108,32 @@ int main()
 		g_seen.copyW  = 40;
 		g_seen.copyH  = 40;
 		PluginImages::Image(&imgui, &hooks, 7, 40.0f, 40.0f);
-		Check(g_seen.images == 1 && g_seen.w == 40.0f && g_seen.h == 40.0f, "an exact-size copy is drawn at its own size");
+		Check(g_seen.images == 1 && g_seen.w == 40.0f && g_seen.h == 40.0f, "a copy of exactly the size asked for is drawn at that size");
+	}
+
+	{
+		Reset();
+		g_seen.state = kWaiting;
+		PluginImages::Image(&imgui, &hooks, 7, 28.0f, 40.0f);
+		Check(g_seen.dummies == 1 && g_seen.w == 28.0f && g_seen.h == 40.0f, "a non-square box reserves its own shape");
+		float reservedW = g_seen.w, reservedH = g_seen.h;
+
+		Reset();
+		g_seen.handle = handle;
+		g_seen.copyW  = 40;
+		g_seen.copyH  = 40;
+		PluginImages::Image(&imgui, &hooks, 7, 28.0f, 40.0f);
+		Check(g_seen.askedSize == 40, "a non-square box asks for its longer side");
+		Check(g_seen.images == 1 && g_seen.w == reservedW && g_seen.h == reservedH, "a copy is drawn in the box that was reserved, not at the copy's size");
+	}
+
+	{
+		Reset();
+		g_seen.handle = handle;
+		g_seen.copyW  = 56;
+		g_seen.copyH  = 56;
+		PluginImages::Image(&imgui, &hooks, 7, 32.0f, 32.0f);
+		Check(g_seen.images == 1 && g_seen.w == 32.0f && g_seen.h == 32.0f, "a copy of another size than asked is drawn in the box");
 	}
 
 	{
