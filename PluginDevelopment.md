@@ -2249,6 +2249,8 @@ Textures loaded with the same `name` (case-insensitive) share one GPU resource a
 
 ##### Item icons (item_icons.h)
 
+**Superseded by the image library.** New plugins should use [`plugin_images.h`](#drawing-library-images-plugin_imagesh). This helper stays for plugins that must run on loaders without the image library.
+
 `include/item_icons.h` loads the game's item icons for you. An icon is copied into the loader the first time a window draws it, a few per tick, so nothing waits for all of them at start-up. Include it after `plugin_interface.h` and the Game-SDK headers. It is for client builds: on a server or generic build `Init` returns `false` and the rest does nothing.
 
 The plugin tells it how to read an item, through its own fields:
@@ -2284,9 +2286,11 @@ g_icons.Shutdown();
 
 ##### Drawing library images (plugin_images.h)
 
-When the loader has an image library (`hooks->Images`), `include/plugin_images.h` draws one of its images in a single call. Include it after `plugin_interface.h`.
+The image library is the loader's one place for game images. It reads an image the first time it is drawn, keeps a small copy for the session and gives copies up only when its memory cap is reached. It replaces the item icon helper above for new plugins: use `include/plugin_images.h` and `hooks->Images` instead of `item_icons.h`. The library is client only. Include `plugin_images.h` after `plugin_interface.h`.
 
-1. Ask the library for an id, once, and keep the id. The same name always gives the same id.
+**Loader requirement.** `hooks->Images` exists only in a loader release that has the image library; it is null on a server or generic build. A plugin built against a header that has the table needs such a loader, and an older loader refuses it. A plugin built against a header without the table still compiles the same `PluginImages::Image` call: it reserves the space and draws nothing. Check `hooks->Images` before you call the table yourself.
+
+1. Get an id once and keep it. The same name or path always gives the same id.
 2. In the render callback, call `PluginImages::Image` with that id and a size.
 
 ```cpp
@@ -2298,20 +2302,59 @@ static PluginImageId g_ironId = 0;
 if (hooks->Images)
     g_ironId = hooks->Images->Item(self, "Iron_Plate");
 
-// Render callback: a 20 x 20 image, then the label on the same line
-PluginImages::Image(imgui, hooks, g_ironId, 20.0f, 20.0f);
+// Render callback: a 32 x 32 image, then the label on the same line
+PluginImages::Image(imgui, hooks, g_ironId, 32.0f, 32.0f);
 imgui->SameLine(0, -1);
 imgui->Text("Iron plate");
 ```
 
-What one call does:
+**Getting an id.**
 
-- If the rectangle is scrolled out of view, it reserves the space and does not ask the library, so rows nobody sees are never loaded.
+| Call | Gives the id of | Thread |
+|---|---|---|
+| `Item(self, uniqueItemName)` | an item's image | any |
+| `Path(self, textureObjectPath)` | a texture by object path, `"/Game/.../T_X.T_X"` | any |
+| `FromTexture(self, texture)` | a live `SDK::UTexture2D*`; the same id `Path` gives for its object path | game thread only |
+
+`FromTexture` keeps no pointer. Called off the game thread it returns 0.
+
+**Items with no unique name.** Some items have none, the Ammo item and the building blueprints for example. Ask for those by the name of the item's data asset: `hooks->Images->Item(self, "I_AmmoItem")`. The class name (`"I_AmmoItem_C"`) and the default object's name (`"Default__I_AmmoItem_C"`) work too, in any case, and a unique name wins over an asset name. Never pass `"None"`: it names no item and ends as `PLUGIN_IMAGE_NO_IMAGE`.
+
+**An id loads nothing.** `Item`, `Path` and `FromTexture` only hand out the id. The image is read once it is drawn through `PluginImages::Image`, or once you call `Get(id)`. Rows that are scrolled out of view are never read.
+
+**Drawing.** One call does this:
+
+- If the rectangle is scrolled out of view, it reserves the space and does not ask the library.
 - If the image is ready, it draws it.
 - If not, it reserves the same space, so the row keeps its height and the text after it does not move when the image arrives.
-- With the `CollapseNoImage` flag, an item that has no image takes no space: `PluginImages::Image(imgui, hooks, id, 20.0f, 20.0f, PluginImages::CollapseNoImage)`.
+- With the `CollapseNoImage` flag, an item that has no image takes no space: `PluginImages::Image(imgui, hooks, id, 32.0f, 32.0f, PluginImages::CollapseNoImage)`.
 
-Where there is no image library (an older loader, or a server or generic build), the call reserves the space and draws nothing, so you do not need to check first. Call it from a render callback; it does not keep the image, so call it again on the next frame.
+The helper keeps nothing, so call it again on the next frame. Call it from a render callback.
+
+**Size.** `w` and `h` are screen pixels. The helper asks the loader for a copy of the image made for exactly that size, so draw at the size you want and do not scale the result yourself. The smallest size is 28 pixels (`PluginImages::kMinSize`): a smaller size is raised to it, and the item takes the raised size, so use `kMinSize` when you lay out a row. Until the copy is ready, the helper draws the stored image scaled into the same box.
+
+If you draw without the helper, call `hooks->Images->GetSized(id, size, &w, &h)` with `size` the longer side in whole pixels. It is `Get` for a known size. When it fills in `w` and `h`, the texture is a copy of exactly that size: draw it at `w` by `h`, with no scaling. When `w` and `h` come back 0, it is the stored image: draw it scaled into your box. Like `Get`, the texture is valid for this frame only.
+
+**The four states.** `State(id)` returns one of these. `Get(id)` returns the texture only when the state is `PLUGIN_IMAGE_READY`, and it is valid for this frame only.
+
+| State | Meaning | What a plugin shows |
+|---|---|---|
+| `PLUGIN_IMAGE_NONE` | id 0, unknown, not asked for yet, failed, over the cap, no version map rows on this build, or the library is off | an empty square of the same size |
+| `PLUGIN_IMAGE_WAITING` | asked for, being read | an empty square of the same size |
+| `PLUGIN_IMAGE_READY` | `Get` returns a texture | the image |
+| `PLUGIN_IMAGE_NO_IMAGE` | the item or building resolved and has no image | nothing, or an empty square (see `CollapseNoImage`) |
+
+`PluginImages::Image` already does the right thing for each row, so you only read `State` if you draw by hand.
+
+**Comparing images.** An item id and a texture id can name the same image. `Canonical(id)` maps an id to the one id of its image, so two ids are the same image when their `Canonical` values are equal. You need it only to compare an item id with a texture id. Before an item is resolved it returns the id unchanged. It can be called from any thread.
+
+**Sets.** `UseSets(self, sets)` tells the loader which kinds of images your plugin draws, so it can load them in the background: `PLUGIN_IMAGE_SET_ITEMS`, `PLUGIN_IMAGE_SET_BUILDINGS`, or both ORed together. Pass 0 to clear. The sets are dropped when your plugin unloads. Preloading is a player setting in the loader and is off by default, so never depend on it: draw through `PluginImages::Image` as above and treat preload as a speed-up that may not happen.
+
+```cpp
+// PluginInit
+if (hooks->Images)
+    hooks->Images->UseSets(self, PLUGIN_IMAGE_SET_ITEMS | PLUGIN_IMAGE_SET_BUILDINGS);
+```
 
 ---
 
