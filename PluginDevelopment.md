@@ -2318,6 +2318,8 @@ imgui->Text("Iron plate");
 
 `FromTexture` keeps no pointer. Called off the game thread it returns 0.
 
+**Items with no unique name.** Some items have none, the Ammo item and the building blueprints for example. Ask for those by the name of the item's data asset: `hooks->Images->Item(self, "I_AmmoItem")`. The class name (`"I_AmmoItem_C"`) and the default object's name (`"Default__I_AmmoItem_C"`) work too, in any case, and a unique name wins over an asset name. Never pass `"None"`: it names no item and ends as `PLUGIN_IMAGE_NO_IMAGE`.
+
 **An id loads nothing.** `Item`, `Path` and `FromTexture` only hand out the id. The image is read once it is drawn through `PluginImages::Image`, or once you call `Get(id)`. Rows that are scrolled out of view are never read.
 
 **Drawing.** One call does this:
