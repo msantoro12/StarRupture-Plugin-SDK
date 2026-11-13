@@ -19,12 +19,17 @@
 // The size is in screen pixels. A size under kMinSize is raised to it, and the
 // space the call takes is the raised size, so size your row from kMinSize. The
 // size is rounded to whole pixels. The loader keeps a copy of the image made
-// for exactly that size, so draw at the size you want and do not scale the
-// result yourself.
+// for the longer side of the box, so draw at the size you want and do not scale
+// the result yourself. The item is always the box you asked for, whatever size
+// the loader's copy has: a copy of another size is scaled into the box.
 //
-// Where the loader has no image table (an older loader, a server or generic
-// build), this reserves the space and draws nothing. A plugin built against a
-// header without hooks->Images compiles the same call and gets the same result.
+// Where the loader has no image table (a server or generic build, or a plugin
+// built against a header without hooks->Images), this reserves the space and
+// draws nothing. The call reads hooks->Images->GetSized, which only a loader
+// with interface 77 has, and a plugin cannot ask the loader which number it
+// has. Use this helper only in a plugin that declares 77, which is the default
+// (PLUGIN_INTERFACE_VERSION): a loader with a lower maximum then refuses the
+// plugin instead of running it on a shorter table.
 //
 // The image is valid for this frame only. Nothing is kept: ask again on the
 // next frame.
@@ -90,18 +95,14 @@ namespace PluginImages
 
 		if constexpr (detail::HasImageTable<Hooks>)
 		{
-			// The loader answers with a copy made for this size, to draw 1:1, or
-			// with the stored picture and no size, to draw scaled into the box.
-			int copyW = 0;
-			int copyH = 0;
-			if (PluginTextureHandle image = hooks->Images->GetSized(id, static_cast<int>(w > h ? w : h), &copyW, &copyH))
+			// The loader answers with a copy made for the longer side, or with the
+			// stored picture. Either is drawn into the box, so the item is the
+			// box on every path. A copy of the box's own size is drawn 1:1.
+			if (PluginTextureHandle image = hooks->Images->GetSized(id, static_cast<int>(w > h ? w : h), nullptr, nullptr))
 			{
 				if (hooks->ImGuiTextures)
 				{
-					if (copyW > 0 && copyH > 0)
-						hooks->ImGuiTextures->Image(image, static_cast<float>(copyW), static_cast<float>(copyH));
-					else
-						hooks->ImGuiTextures->Image(image, w, h);
+					hooks->ImGuiTextures->Image(image, w, h);
 					return;
 				}
 			}
