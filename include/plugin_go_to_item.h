@@ -17,6 +17,13 @@
 //     struct saw it; the other side reads only fields inside that size;
 //   - append-only: a new version adds fields at the end of a struct or new
 //     function pointers at the end of GoToItemApi; nothing moves or changes;
+//   - a struct the CALLER passes in (GoToPlace) is read only up to its own `size`,
+//     and `size` is its first field, so it can grow at the end without breaking a
+//     caller built earlier; a size below the version-2 minimum is
+//     GOTO_BAD_ARGUMENT. An array the caller receives (GoToTarget, GoToSource) is
+//     written at the caller's element size as the stride, at most that many bytes
+//     per element, so a caller built with an older, shorter struct still reads it
+//     right; new fields go only at the end;
 //   - the caller provides every output buffer; strings are copied and always
 //     NUL-terminated (truncated if the buffer is small);
 //   - items are named by an item key: UAuItemDataBase::UniqueItemName, or,
@@ -41,13 +48,22 @@
 //     that starts during the unload itself is not covered, which is why you
 //     call Get() right before each use and never keep the table.
 //
+// Version 2 adds targets: a target is a (kind, key) pair, and an item is one kind
+// of it. The other kinds are things the game map shows (GOTO_KIND_MAP), ore nodes
+// (GOTO_KIND_ORE) and a place a caller names (GOTO_KIND_PLACE). The v1 item calls
+// keep working and act on kind GOTO_KIND_ITEM. Call Get() as before (it asks for
+// version 1 and gets the newest table) and check every v2 member with
+// GOTOITEM_HAS before using it: an older GoToItem has a shorter table. While
+// GoToItem is turned off every call answers GOTO_OFF at once and does nothing;
+// ask again later, it comes back without a restart.
+//
 // Needs interface 77 (the item icons use hooks->Images); a loader without
 // images still gets every call here, the pins just draw the coloured circle.
 
 #include <cstdint>
 #include <cstddef>
 
-#define GOTOITEM_API_VERSION 1
+#define GOTOITEM_API_VERSION 2
 
 // Exported by the implementing module as an undecorated C function:
 //   extern "C" __declspec(dllexport) const GoToItemApi* GoToItem_GetApi(uint32_t wantedVersion);
@@ -65,6 +81,16 @@
 #define GOTOITEM_KEY_CHARS             96   // UniqueItemName buffer, incl. NUL
 #define GOTOITEM_NAME_CHARS            64   // display names, incl. NUL
 
+// Version 2: the kind of a target (GoToTarget::kind and the `kind` argument of
+// the v2 calls). The tracked limit above counts every kind together.
+#define GOTO_KIND_ITEM   0u   // key = item key; the same entries as the v1 item calls
+#define GOTO_KIND_MAP    1u   // key = a map entry kind, e.g. "poi.Cave", "building.BaseCore", "foundable.Drone", "pin", "player"
+#define GOTO_KIND_ORE    2u   // key = "ore.<resource>"
+#define GOTO_KIND_PLACE  3u   // key = the decimal place key TrackPlace gave back
+// A place closes by itself when the player (the character, not the camera) comes
+// within this many metres of it.
+#define GOTO_PLACE_ARRIVE_METERS 10
+
 // ---------------------------------------------------------------------------
 // Results. Plain int32_t across the boundary; GoToItemApi::ResultToString
 // gives a short player-facing reason.
@@ -81,6 +107,9 @@ enum GoToResult : int32_t
 	GOTO_UNKNOWN_SOURCE     = -6,  // no longer returned by SelectSource; kept so the numbers stay put
 	GOTO_NOT_READY          = -7,  // no world yet / not initialised
 	GOTO_BAD_ARGUMENT       = -8,
+	// Version 2:
+	GOTO_UNKNOWN_TARGET     = -9,  // the key is not valid for that kind, or the kind is unknown
+	GOTO_OFF                = -10, // turned off right now; every call answers this until it is back on
 };
 
 // ---------------------------------------------------------------------------
@@ -126,6 +155,33 @@ struct GoToTrackedItem
 enum : uint32_t
 {
 	GOTO_ITEM_HAS_PICK = 1u << 0,   // selectedSourceKey is set
+};
+
+// Version 2. A place a caller wants marked: a fixed point, or an actor followed
+// by its object reference (index and serial, as the loader's object lookups give
+// them). `size` is first and the struct only grows at the end; GoToItem reads
+// nothing past `size`.
+struct GoToPlace
+{
+	uint32_t size;                              // sizeof(GoToPlace) as the builder saw it
+	uint32_t flags;                             // 0 for now
+	char     name[GOTOITEM_NAME_CHARS];         // e.g. "Fabricator v.2"
+	char     iconItemKey[GOTOITEM_KEY_CHARS];   // optional item key for the icon; "" = a plain disc
+	double   x, y, z;                           // world position, cm; used when actorIndex is -1, and as the first position
+	int32_t  actorIndex, actorSerial;           // follow this actor; -1 = a fixed point
+};
+
+// Version 2. One tracked target of any kind (an item as well).
+struct GoToTarget
+{
+	uint32_t size;                              // sizeof(GoToTarget) as the builder saw it
+	uint32_t kind;                              // GOTO_KIND_*
+	char     key[GOTOITEM_KEY_CHARS];
+	char     displayName[GOTOITEM_NAME_CHARS];
+	uint32_t colorRgba;                         // 0xAARRGGBB, opaque
+	uint64_t selectedSourceKey;                 // 0 = follow the nearest location
+	float    nearestMeters;                     // < 0 = no location known yet
+	uint32_t sourceCount;                       // locations known now
 };
 
 static_assert(sizeof(GoToSource) == 112, "GoToSource v1 layout");
@@ -209,8 +265,65 @@ struct GoToItemApi
 	// Short player-facing reason for a GoToResult, valid forever (static).
 	const char* (*ResultToString)(int32_t result);
 
+	// --- version 2: targets ------------------------------------------------------
+	// Check each member with GOTOITEM_HAS before calling it. `kind` is GOTO_KIND_*;
+	// ITEM goes to the same entry as the v1 item calls. Every call returns GOTO_OFF
+	// while GoToItem is turned off, and GOTO_UNKNOWN_TARGET for a key the kind does
+	// not have (a MAP or ORE key is accepted while the first scan has not finished).
+	// The other results are those of TrackItem and friends.
+
+	// PLACE through TrackTarget is GOTO_UNKNOWN_TARGET: a place comes only from
+	// TrackPlace.
+	int32_t (*TrackTarget)(uint32_t kind, const char* key);
+	int32_t (*UntrackTarget)(uint32_t kind, const char* key);
+	// 1 tracked, 0 not, or GOTO_OFF.
+	int32_t (*IsTrackedTarget)(uint32_t kind, const char* key);
+	// Every tracked target of every kind, in tracking order. Like ListTracked,
+	// `elementSize` is the caller's sizeof(GoToTarget): each element is written at
+	// that stride and cut to it. At most `capacity` elements are written; *outCount
+	// is how many exist in all (it may exceed capacity). out may be null with
+	// capacity 0 to just count.
+	int32_t (*ListTargets)(GoToTarget* out, uint32_t elementSize, uint32_t capacity, uint32_t* outCount);
+	// The locations of one target, nearest first, at most maxSourcesPerItem. Same
+	// convention (elementSize = the caller's sizeof(GoToSource)). Also for a target
+	// that is not tracked, where GoToItem can know it.
+	int32_t (*ListTargetSources)(uint32_t kind, const char* key, GoToSource* out, uint32_t elementSize, uint32_t capacity, uint32_t* outCount);
+	// Like SelectSource, for any kind. sourceKey 0 = follow the nearest.
+	int32_t (*SelectTargetSource)(uint32_t kind, const char* key, uint64_t sourceKey);
+	// Mark one place. Reads `place` up to place->size (GOTO_BAD_ARGUMENT when that
+	// is below the version-2 size). *outKey is the place's key: its decimal text is
+	// the key of a GOTO_KIND_PLACE target. It counts toward the tracked limit. The
+	// place closes by itself on arrival (GOTO_PLACE_ARRIVE_METERS), when its actor
+	// is gone, on UntrackPlace and when a save loads; it is never saved.
+	int32_t (*TrackPlace)(const GoToPlace* place, uint64_t* outKey);
+	int32_t (*UntrackPlace)(uint64_t placeKey);
+
 	// Appended in later versions go below this line.
 };
+
+// Worked examples (version 2). Each takes the table from Get() right before the
+// call and checks the member first.
+//
+//   Production Viewer or Codex: track an item and pick the base the player chose.
+//     const GoToItemApi* api = GoToItem::Get();
+//     if (api && GOTOITEM_HAS(api, TrackTarget)) {
+//         api->TrackTarget(GOTO_KIND_ITEM, itemKey);        // or the v1 TrackItem
+//         api->SelectSource(itemKey, baseKey);
+//     }
+//
+//   WAILA: one place at a time. Keep the last key, close it, then mark the new one.
+//     static uint64_t s_last = 0;
+//     const GoToItemApi* api = GoToItem::Get();
+//     if (api && GOTOITEM_HAS(api, TrackPlace)) {
+//         if (s_last) api->UntrackPlace(s_last);
+//         GoToPlace place = {};
+//         place.size = sizeof(GoToPlace);
+//         strcpy_s(place.name, "Fabricator v.2");
+//         place.actorIndex = objectIndex;  place.actorSerial = objectSerial;   // or -1, -1 and x, y, z
+//         if (api->TrackPlace(&place, &s_last) != GOTO_OK) s_last = 0;
+//     }
+//     Hide the Go button when api is null (GoToItem is not installed); a call that
+//     answers GOTO_OFF means "turned off right now".
 
 // ---------------------------------------------------------------------------
 // Client wrapper. Header-only.
