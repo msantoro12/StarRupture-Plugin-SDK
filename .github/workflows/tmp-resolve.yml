@@ -1,0 +1,70 @@
+name: tmp resolve (reusable)
+on:
+  workflow_call:
+    inputs:
+      sdk_repository: { required: false, type: string, default: '' }
+      sdk_ref: { required: false, type: string, default: '' }
+      expect: { required: true, type: string }
+jobs:
+  resolve:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      # By default the headers come from the commit this file is at. The github
+      # context describes the caller; job.workflow_* describes this workflow.
+      - name: Resolve the Plugin SDK source
+        id: sdk
+        shell: pwsh
+        env:
+          SDK_REPOSITORY: ${{ inputs.sdk_repository }}
+          SDK_REF: ${{ inputs.sdk_ref }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          $repository = if ($env:SDK_REPOSITORY) { $env:SDK_REPOSITORY } else { $env:WORKFLOW_REPOSITORY }
+          if (-not $repository) {
+            throw "job.workflow_repository is empty, so the Plugin SDK repository is unknown. Set sdk_repository and sdk_ref."
+          }
+          $ref = $env:SDK_REF
+          if (-not $ref) {
+            if ($repository -ne $env:WORKFLOW_REPOSITORY) {
+              throw "sdk_repository is $repository, not the repository of this workflow. Set sdk_ref too."
+            }
+            if ($env:WORKFLOW_SHA -notmatch '^[0-9a-f]{40}$') {
+              throw "job.workflow_sha is '$env:WORKFLOW_SHA', not a commit sha. Set sdk_ref."
+            }
+            $ref = $env:WORKFLOW_SHA
+          }
+          Write-Host "Plugin SDK headers: $repository at $ref"
+          "repository=$repository" >> $env:GITHUB_OUTPUT
+          "ref=$ref" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout Plugin SDK
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.sdk.outputs.repository }}
+          ref: ${{ steps.sdk.outputs.ref }}
+          path: plugin-sdk
+          submodules: true
+
+      - name: Print the commit
+        shell: pwsh
+        env:
+          EXPECT: ${{ inputs.expect }}
+          CALLER_SHA: ${{ github.sha }}
+          CALLER_REF: ${{ github.workflow_ref }}
+          CALLEE_REF: ${{ job.workflow_ref }}
+          CALLEE_SHA: ${{ job.workflow_sha }}
+        run: |
+          $head = git -C plugin-sdk rev-parse HEAD
+          Write-Host "github.sha=$env:CALLER_SHA"
+          Write-Host "github.workflow_ref=$env:CALLER_REF"
+          Write-Host "job.workflow_ref=$env:CALLEE_REF"
+          Write-Host "job.workflow_sha=$env:CALLEE_SHA"
+          Write-Host "plugin-sdk HEAD=$head"
+          Select-String -Path plugin-sdk\include\plugin_interface.h -Pattern '^#define PLUGIN_INTERFACE_VERSION ' | ForEach-Object { Write-Host $_.Line }
+          Write-Host "plugin_go_to_item.h present: $(Test-Path plugin-sdk\include\plugin_go_to_item.h)"
+          Write-Host "Game-SDK at $(git -C 'plugin-sdk\StarRupture SDK' rev-parse HEAD)"
+          $want = if ($env:EXPECT -eq 'own') { $env:CALLEE_SHA } else { $env:EXPECT }
+          if ($head -ne $want) { throw "expected $want, got $head" }
