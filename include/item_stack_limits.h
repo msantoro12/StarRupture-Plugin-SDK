@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 // Apply and restore item stack sizes.
@@ -13,26 +14,42 @@
 // Raises UAuItemDataBase::MaxStack on the items you hand it and puts every
 // value back to vanilla on request. A size only ever raises an item (one whose
 // own stack is already bigger keeps it), items that do not stack are left
-// alone, and the size is capped at kMaxStackCap. The member offsets come from
-// the loader's version map (keys below), so nothing is compiled in.
+// alone, and the size is capped at kMaxStackCap.
 //
-// Needs plugin interface 73 (PluginMap::ResolveField). Game thread only:
+// Both members (keys below) are reflected: the loader reads their offsets from
+// the running game's own reflection data, by class and member name, so a build
+// with no version-map row for them still resolves. Resolve is false when the
+// loader cannot give either member at the size compiled here. The "does not
+// stack" value is read by name from the game's ENxItemStackType enum, once;
+// when that lookup misses, Apply raises nothing (StackTypeMissed() is then
+// true: log it once).
+//
+// Needs plugin interface 73: plugin_map.h, which this header includes, calls
+// the v73 DeclareFeature, and the example below uses it. Game thread only:
 // call everything from Tick. Items are held as ObjectRef, checked before every
 // write, so an item the game has freed is dropped and never written to.
 //
 //   ItemStackLimits::Limits g_stacks;
-//   // OnPluginLoadHooks, with the other resolves:
-//   ItemStackLimits::Resolve(scanner, self);   // keys: ItemStackLimits::Keys()
-//   // Tick, once the items are loaded:
+//   static PluginMap::Feature s_stacks{ "stack-limits", "Item stack sizes",
+//       ItemStackLimits::Keys(), {} };
+//   // OnPluginLoadHooks: declare the feature first, then resolve. A miss then
+//   // turns off this part only, not the whole plugin.
+//   PluginMap::DeclareFeature(scanner, self, s_stacks);
+//   ItemStackLimits::Resolve(scanner, self);
+//   // Once, on a Tick after the items are loaded:
 //   g_stacks.SetItems(loadedItems);            // std::vector<SDK::UAuItemDataBase*>
 //   g_stacks.SetTarget(500);                   // 0 = leave the game's own sizes
-//   g_stacks.Apply();                          // every tick: cheap, only writes a change
-//   // when the feature turns off, and in Shutdown (on the game thread):
+//   // Every Tick. On() also turns false while a server's rules deny the
+//   // feature, so the sizes go back then:
+//   if (s_stacks.On())
+//       g_stacks.Apply();                      // cheap, only writes a change
+//   else
+//       g_stacks.RestoreAll();
+//   // In Shutdown (on the game thread):
 //   g_stacks.RestoreAll();
 //
-// If either key is missing on a game build, Resolve returns false and
-// Limits does nothing (Apply returns 0, Available() is false): list Keys() in
-// a PluginMap::Feature so the plugin keeps running with this part off.
+// With a key unresolved, Limits does nothing (Apply returns 0, Available() is
+// false).
 namespace ItemStackLimits
 {
     constexpr int kMaxStackCap = 9999;
@@ -80,14 +97,16 @@ namespace ItemStackLimits
     public:
         // The items to manage (every item data asset you found). Replaces the
         // list: an item already touched keeps its recorded vanilla value, and
-        // one dropped from the list is restored first. Live items only.
+        // one dropped from the list is restored first. An item listed more than
+        // once is tracked once. Live items only.
         void SetItems(const std::vector<SDK::UAuItemDataBase*>& items)
         {
             std::vector<Entry> next;
             next.reserve(items.size());
+            std::unordered_set<const SDK::UAuItemDataBase*> seen;
             for (SDK::UAuItemDataBase* item : items)
             {
-                if (!item)
+                if (!item || !seen.insert(item).second)
                     continue;
                 Entry e;
                 e.item.Set(item);
@@ -131,12 +150,12 @@ namespace ItemStackLimits
                 }
                 int32_t* maxStack = MaxStackField().In(item);
                 const SDK::ENxItemStackType* type = StackingTypeField().In(item);
-                if (!maxStack || !type || *type == SDK::ENxItemStackType::DoNotStack)
+                if (!maxStack || !type || !LookUpDoNotStack() || static_cast<int64_t>(*type) == m_doNotStack)
                     continue;
 
                 if (!e.touched)
                 {
-                    e.vanilla = *maxStack > 0 ? *maxStack : 1;
+                    e.vanilla = *maxStack;
                     e.touched = true;
                 }
                 const int want = Compose(e.vanilla, m_target);
@@ -161,6 +180,10 @@ namespace ItemStackLimits
             return changed;
         }
 
+        // True once the game's "does not stack" value could not be read: Apply
+        // then raises nothing.
+        bool StackTypeMissed() const { return m_askedDoNotStack && !m_foundDoNotStack; }
+
         // For a log line.
         int Tracked() const { return static_cast<int>(m_entries.size()); }
         int Raised() const
@@ -179,6 +202,18 @@ namespace ItemStackLimits
             bool    touched = false;
         };
 
+        // Asked once, on the first live item: the lookup walks every object.
+        bool LookUpDoNotStack()
+        {
+            if (!m_askedDoNotStack)
+            {
+                m_askedDoNotStack = true;
+                m_foundDoNotStack = PluginMap::EnumValue("ENxItemStackType", "DoNotStack", m_doNotStack)
+                    == PluginMap::EnumLookup::Found;
+            }
+            return m_foundDoNotStack;
+        }
+
         static bool Restore(Entry& e)
         {
             if (!e.touched)
@@ -194,5 +229,8 @@ namespace ItemStackLimits
 
         std::vector<Entry> m_entries;
         int                m_target = 0;
+        int64_t            m_doNotStack = 0;
+        bool               m_askedDoNotStack = false;
+        bool               m_foundDoNotStack = false;
     };
 }

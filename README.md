@@ -192,7 +192,7 @@ The tests for `Math::` are in `Tests/WaypointTests/` and build without the game.
 
 ## Item stack sizes
 
-`include/item_stack_limits.h` is a header-only helper to apply and restore item stack sizes. It raises `MaxStack` on the items you give it (never below an item's own vanilla stack, never on items that do not stack, capped at 9999) and puts every value back to vanilla on request. The member offsets come from the loader's version map, so nothing is compiled in; if the map has no row for a build, the helper does nothing. It needs plugin interface 72 and the Game-SDK's `AuItems_classes.hpp`. Call it from `Tick`: it holds the items as `ObjectRef` and checks each before a write. Usage is in the header's comment; the tests in `Tests/ItemStackLimitsTests/` build without the game.
+`include/item_stack_limits.h` is a header-only helper to apply and restore item stack sizes. It raises `MaxStack` on the items you give it (never below an item's own vanilla stack, never on items that do not stack, capped at 9999) and puts every value back to vanilla on request. Both members are reflected, so the loader reads their offsets from the running game's own reflection data and a build with no version map row still works; `Resolve` is false when the loader cannot give either member at the compiled size. The "does not stack" value is read by name from the game's enum, and if that lookup misses nothing is raised. It needs plugin interface 73 (`plugin_map.h`, which it includes, calls the v73 `DeclareFeature`) and the Game-SDK's `AuItems_classes.hpp`. Call it from `Tick`: it holds the items as `ObjectRef` and checks each before a write. Usage is in the header's comment; the tests in `Tests/ItemStackLimitsTests/` build without the game.
 
 ## Interface versioning
 

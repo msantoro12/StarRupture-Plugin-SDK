@@ -44,6 +44,22 @@ static void Place(UAuItemDataBase& item, int32 index, int32_t maxStack, ENxItemS
 	item.StackingType = type;
 }
 
+// The game's ENxItemStackType enum as an object in slot 0, with DoNotStack at
+// the given number.
+static UEnum g_stackEnum;
+static void PlaceStackEnum(int64 doNotStack)
+{
+	static std::vector<TPair<FName, int64>> names;
+	names = { { FName("ENxItemStackType::StackByType"), 0 }, { FName("ENxItemStackType::DoNotStack"), doNotStack } };
+	g_stackEnum.Name = FName("ENxItemStackType");
+	g_stackEnum.CastFlags = EClassCastFlags::Enum;
+	g_stackEnum.Names = TArray<TPair<FName, int64>>(names.data(), static_cast<int32>(names.size()));
+	auto& slots = UObject::GObjects.Objects;
+	if (slots.empty())
+		slots.resize(1, nullptr);
+	slots[0] = &g_stackEnum;
+}
+
 static void ResolveBothRows()
 {
 	ItemStackLimits::MaxStackField().offset = static_cast<int32_t>(offsetof(UAuItemDataBase, MaxStack));
@@ -63,6 +79,8 @@ static bool FakeResolveField(const IPluginSelf*, const PluginFieldRequest* reque
 
 int main()
 {
+	PlaceStackEnum(static_cast<int64>(ENxItemStackType::DoNotStack));
+
 	printf("compose\n");
 	{
 		Check(Compose(50, 200) == 200, "a bigger size raises the stack");
@@ -80,6 +98,8 @@ int main()
 		Check(keys.size() == 2, "two keys");
 		Check(std::string(keys[0]) == "UAuItemDataBase::MaxStack", "MaxStack key");
 		Check(std::string(keys[1]) == "UAuItemDataBase::StackingType", "StackingType key");
+		const PluginMap::Feature feature{ "stack-limits", "Item stack sizes", ItemStackLimits::Keys(), {} };
+		Check(feature.keys.size() == 2 && feature.On(), "the keys make a feature, as in the header's example");
 
 		IPluginHookScanner scanner{};
 		scanner.ResolveField = &FakeResolveField;
@@ -173,6 +193,69 @@ int main()
 		limits.Apply();
 		limits.RestoreAll();
 		Check(a.MaxStack == 50 && b.MaxStack == 20, "vanilla survives a re-list while raised");
+	}
+
+	printf("an item listed twice\n");
+	{
+		ResolveBothRows();
+		UAuItemDataBase a;
+		Place(a, 1, 50);
+
+		Limits limits;
+		limits.SetItems({ &a, &a });
+		Check(limits.Tracked() == 1, "a repeated item is tracked once");
+		limits.SetTarget(500);
+		Check(limits.Apply() == 1 && limits.Apply() == 0, "Apply settles with a repeated item");
+		limits.SetTarget(200);
+		Check(limits.Apply() == 1 && limits.Apply() == 0, "a new target settles too");
+		limits.SetItems({ &a, &a });
+		limits.Apply();
+		limits.RestoreAll();
+		Check(a.MaxStack == 50, "a repeated item restores to its vanilla value after a re-list");
+	}
+
+	printf("an original of zero or less\n");
+	{
+		ResolveBothRows();
+		UAuItemDataBase a, b;
+		Place(a, 1, 0);
+		Place(b, 2, -1);
+
+		Limits limits;
+		limits.SetItems({ &a, &b });
+		limits.SetTarget(500);
+		limits.Apply();
+		Check(a.MaxStack == 500 && b.MaxStack == 500, "raised to the size");
+		limits.RestoreAll();
+		Check(a.MaxStack == 0 && b.MaxStack == -1, "restored to the exact original");
+	}
+
+	printf("the does-not-stack value\n");
+	{
+		ResolveBothRows();
+		UAuItemDataBase a, b;
+		Place(a, 1, 50, ENxItemStackType::DoNotStack);   // the compiled number
+		Place(b, 2, 20, static_cast<ENxItemStackType>(5));
+
+		PlaceStackEnum(5);
+		Limits renumbered;
+		renumbered.SetItems({ &a, &b });
+		renumbered.SetTarget(500);
+		renumbered.Apply();
+		Check(b.MaxStack == 20, "the running game's number for DoNotStack is honoured");
+		Check(a.MaxStack == 500, "the compiled number is not used");
+		Check(!renumbered.StackTypeMissed(), "the lookup is not reported as missed");
+		renumbered.RestoreAll();
+
+		UObject::GObjects.Objects[0] = nullptr;
+		Limits missing;
+		missing.SetItems({ &a, &b });
+		missing.SetTarget(500);
+		Check(!missing.StackTypeMissed(), "not missed before the first Apply");
+		Check(missing.Apply() == 0 && a.MaxStack == 50 && b.MaxStack == 20, "with no enum nothing is raised");
+		Check(missing.StackTypeMissed(), "the miss is reported");
+		PlaceStackEnum(static_cast<int64>(ENxItemStackType::DoNotStack));
+		Check(missing.Apply() == 0, "the lookup runs once, not every tick");
 	}
 
 	printf("rows missing\n");
