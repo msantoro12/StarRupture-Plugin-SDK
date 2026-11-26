@@ -1,0 +1,22 @@
+name: tmp ref proof
+on:
+  push:
+    branches: [ 'tmp/sdk-ref-caller' ]
+permissions:
+  contents: read
+jobs:
+  default:
+    uses: msantoro12/StarRupture-Plugin-SDK/.github/workflows/tmp-resolve.yml@tmp/sdk-ref-callee
+    with:
+      expect: own
+  explicit-ref:
+    uses: msantoro12/StarRupture-Plugin-SDK/.github/workflows/tmp-resolve.yml@tmp/sdk-ref-callee
+    with:
+      sdk_repository: AlienXAXS/StarRupture-Plugin-SDK
+      sdk_ref: main
+      expect: da33976de8ba8d4a297c74b32e6eb699771f1cd4
+  other-repo-no-ref-must-fail:
+    uses: msantoro12/StarRupture-Plugin-SDK/.github/workflows/tmp-resolve.yml@tmp/sdk-ref-callee
+    with:
+      sdk_repository: AlienXAXS/StarRupture-Plugin-SDK
+      expect: never
